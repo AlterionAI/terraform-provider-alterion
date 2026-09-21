@@ -4,7 +4,7 @@
 
 This repo follows the Alterion engineering standards imported above (PR
 workflow, CI gates, multi-agent coordination, merge flow, cost discipline).
-This file holds only what's specific to `alterion-terraform-provider`.
+This file holds only what's specific to `terraform-provider-alterion`.
 
 ## What this is
 
@@ -45,6 +45,6 @@ TF_ACC=1 go test ./... -run TestAcc -v            # + acceptance-style tests
 
 ## Module path & registry address
 
-- Go module: `github.com/AlterionAI/alterion-terraform-provider`
+- Go module: `github.com/AlterionAI/terraform-provider-alterion`
 - Terraform registry address: `registry.terraform.io/alterion/alterion`
 - Resource/data source prefix: `alterion_`

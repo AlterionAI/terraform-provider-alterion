@@ -14,7 +14,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
-	"github.com/AlterionAI/alterion-terraform-provider/internal/client"
+	"github.com/AlterionAI/terraform-provider-alterion/internal/client"
 )
 
 // Ensure AlterionProvider satisfies the provider.Provider interface.

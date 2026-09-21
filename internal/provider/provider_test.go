@@ -13,7 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 
-	"github.com/AlterionAI/alterion-terraform-provider/internal/client"
+	"github.com/AlterionAI/terraform-provider-alterion/internal/client"
 )
 
 // testAccProtoV6ProviderFactories are used to instantiate the provider

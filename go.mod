@@ -1,4 +1,4 @@
-module github.com/AlterionAI/alterion-terraform-provider
+module github.com/AlterionAI/terraform-provider-alterion
 
 go 1.27.1
 

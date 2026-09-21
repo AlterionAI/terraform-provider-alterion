@@ -8,7 +8,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 
-	"github.com/AlterionAI/alterion-terraform-provider/internal/provider"
+	"github.com/AlterionAI/terraform-provider-alterion/internal/provider"
 )
 
 // version is set via -ldflags "-X main.version=..." at release build time
