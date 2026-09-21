@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  go:
+    name: Go vet / test / build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+      - name: gofmt check
+        run: |
+          fmt_out="$(gofmt -l .)"
+          if [ -n "$fmt_out" ]; then
+            echo "The following files are not gofmt'd:"
+            echo "$fmt_out"
+            exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
+      - name: go build
+        run: go build ./...
+      - name: go test (unit)
+        run: go test ./internal/client/... -v
+      - name: go test (acceptance, in-process fake Orion server)
+        env:
+          TF_ACC: "1"
+        run: go test ./internal/provider/... -v
+        # These tests never call a real Orion deployment: internal/provider's
+        # TestAcc* tests stand up an httptest.Server that fakes the Orion
+        # REST contract. terraform-plugin-testing still needs a real
+        # `terraform` binary on PATH for protocol handshaking, which
+        # setup-terraform below provides.
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+  terraform-examples:
+    name: terraform fmt/validate on examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+      - name: terraform fmt -check
+        run: terraform fmt -check -recursive examples/
+      - name: terraform init (offline)
+        # The aws provider may not resolve without network access to the
+        # public Terraform registry in a locked-down CI runner; this step
+        # is allowed to fail without failing the workflow. It still runs
+        # so a genuine misconfiguration is visible in the logs.
+        continue-on-error: true
+        working-directory: examples/agentcore
+        run: terraform init -backend=false
+      - name: terraform validate
+        continue-on-error: true
+        working-directory: examples/agentcore
+        run: terraform validate
