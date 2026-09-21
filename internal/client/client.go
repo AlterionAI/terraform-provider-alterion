@@ -79,6 +79,30 @@ func (c *Client) GetPathKey(ctx context.Context, environment, slug string) (*Pat
 	return &out, nil
 }
 
+// AgentResponse is the body of a successful GET by short id call.
+type AgentResponse struct {
+	Success      bool   `json:"success"`
+	AgentID      string `json:"agentId"`
+	ShortID      string `json:"shortId"`
+	DisplayName  string `json:"displayName"`
+	Status       string `json:"status"`
+	IsRegistered bool   `json:"isRegistered"`
+	RegisteredBy string `json:"registeredBy"`
+}
+
+// GetAgent calls GET /api/v1/agents/asserted/{shortId}. A 404 (agent
+// missing or archived) is returned as an *APIError, not swallowed here, so
+// the resource layer can decide how to react (e.g. remove from state).
+func (c *Client) GetAgent(ctx context.Context, shortID string) (*AgentResponse, error) {
+	path := "/api/v1/agents/asserted/" + url.PathEscape(shortID)
+
+	var out AgentResponse
+	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // CreateAgentRequest is the body of POST /api/v1/agents/asserted.
 type CreateAgentRequest struct {
 	Environment          string `json:"environment"`

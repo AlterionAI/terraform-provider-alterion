@@ -44,6 +44,11 @@ variable "environment" {
   }
 }
 
+variable "orion_boundary" {
+  type        = string
+  description = "Name of the Orion contextual boundary this agent is approved into on registration. Required here (no default): when omitted, the agent lands in Shadow and is only captured, not enforced, which is not the intended default for this example."
+}
+
 locals {
   # Recommended slug convention: <aws-account-id>-<region>-<runtime-name>,
   # lowercased and with anything other than a-z0-9 collapsed to a single
@@ -100,10 +105,11 @@ resource "aws_bedrockagentcore_agent_runtime" "this" {
 # a plain string, not a reference the provider graph would otherwise pick
 # up as a dependency edge on its own here.
 resource "alterion_agent" "this" {
-  environment  = var.environment
-  slug         = local.slug
-  display_name = var.runtime_name
-  runtime_arn  = aws_bedrockagentcore_agent_runtime.this.agent_runtime_arn
+  environment            = var.environment
+  slug                   = local.slug
+  display_name           = var.runtime_name
+  runtime_arn            = aws_bedrockagentcore_agent_runtime.this.agent_runtime_arn
+  auto_register_boundary = var.orion_boundary
 
   aws_account_id = var.aws_account_id
   region         = var.aws_region

@@ -110,6 +110,53 @@ func TestGetPathKey_Unauthorized401(t *testing.T) {
 	}
 }
 
+func TestGetAgent_Success(t *testing.T) {
+	c, closeFn := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		if r.URL.Path != "/api/v1/agents/asserted/75a30ffb2baa" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(AgentResponse{
+			Success:      true,
+			AgentID:      "asserted|production|123456789012-us-east-1-support-bot",
+			ShortID:      "75a30ffb2baa",
+			DisplayName:  "Support Bot",
+			Status:       "active",
+			IsRegistered: true,
+			RegisteredBy: "orion_at_testtoken",
+		})
+	})
+	defer closeFn()
+
+	resp, err := c.GetAgent(context.Background(), "75a30ffb2baa")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.DisplayName != "Support Bot" || resp.Status != "active" || !resp.IsRegistered {
+		t.Errorf("unexpected response: %+v", resp)
+	}
+}
+
+func TestGetAgent_NotFound404(t *testing.T) {
+	c, closeFn := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(errorBody{Success: false, Error: "agent not found"})
+	})
+	defer closeFn()
+
+	_, err := c.GetAgent(context.Background(), "gone")
+	apiErr, ok := err.(*APIError)
+	if !ok || apiErr.Status != http.StatusNotFound {
+		t.Fatalf("expected 404 APIError, got %v", err)
+	}
+	if apiErr.Message != "agent not found" {
+		t.Errorf("unexpected message: %s", apiErr.Message)
+	}
+}
+
 func TestCreateAgent_Success(t *testing.T) {
 	c, closeFn := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

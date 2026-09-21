@@ -24,7 +24,7 @@ Registers an asserted Orion agent. This is the register-late half of the compute
 ### Optional
 
 - `adopt` (Boolean) When true, allows this resource to take over an agent row already owned by a different principal, and to delete it even if owned elsewhere. Defaults to false.
-- `auto_register_boundary` (String) Name of the boundary this agent should be auto-registered into, if any.
+- `auto_register_boundary` (String) Name of the Orion contextual boundary this agent is approved into on registration. When omitted, the agent lands in Shadow and is only captured, not enforced.
 - `aws_account_id` (String) AWS account id the runtime is deployed in.
 - `region` (String) Cloud region the runtime is deployed in.
 - `runtime_arn` (String) ARN of the underlying runtime (e.g. an AWS Bedrock AgentCore runtime), once it exists.

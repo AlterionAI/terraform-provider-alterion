@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
@@ -25,11 +27,43 @@ func testAccProtoV6ProviderFactories() map[string]func() (tfprotov6.ProviderServ
 	}
 }
 
-// newFakeOrionServer stands in for the Orion web app's asserted-agent
-// routes for acceptance-style tests, using the real server-side short-id
-// derivation so responses are self-consistent.
-func newFakeOrionServer(t *testing.T) *httptest.Server {
+// fakeAgentRecord is what the fake Orion server remembers about a
+// registered agent, keyed by short id.
+type fakeAgentRecord struct {
+	agentID      string
+	displayName  string
+	status       string
+	isRegistered bool
+}
+
+// fakeOrionServer stands in for the Orion web app's asserted-agent routes
+// for acceptance-style tests, using the real server-side short-id
+// derivation so responses are self-consistent. It keeps a small in-memory
+// store so GET-by-short-id can 404 once an agent has been "archived" —
+// including on demand via forget, for tests that simulate an agent going
+// missing out from under Terraform.
+type fakeOrionServer struct {
+	*httptest.Server
+
+	mu      sync.Mutex
+	records map[string]*fakeAgentRecord
+}
+
+// forget removes an agent from the fake server's store, so a subsequent
+// GET-by-short-id 404s as if the agent were deleted or archived directly
+// against Orion, outside of Terraform.
+func (f *fakeOrionServer) forget(shortID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.records, shortID)
+}
+
+// newFakeOrionServer starts a fakeOrionServer. Callers must defer
+// server.Close().
+func newFakeOrionServer(t *testing.T) *fakeOrionServer {
 	t.Helper()
+
+	fake := &fakeOrionServer{records: map[string]*fakeAgentRecord{}}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/agents/asserted/path-key", func(w http.ResponseWriter, r *http.Request) {
@@ -54,11 +88,23 @@ func newFakeOrionServer(t *testing.T) *httptest.Server {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		environment, _ := body["environment"].(string)
 		slug, _ := body["slug"].(string)
+		displayName, _ := body["displayName"].(string)
 		shortID := client.ExpectedShortID(environment, slug)
+		agentID := "asserted|" + environment + "|" + slug
+
+		fake.mu.Lock()
+		fake.records[shortID] = &fakeAgentRecord{
+			agentID:      agentID,
+			displayName:  displayName,
+			status:       "active",
+			isRegistered: true,
+		}
+		fake.mu.Unlock()
+
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"success":      true,
-			"agentId":      "asserted|" + environment + "|" + slug,
+			"agentId":      agentID,
 			"shortId":      shortID,
 			"status":       "active",
 			"isRegistered": true,
@@ -66,18 +112,47 @@ func newFakeOrionServer(t *testing.T) *httptest.Server {
 		})
 	})
 	mux.HandleFunc("/api/v1/agents/asserted/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodDelete {
+		shortID := strings.TrimPrefix(r.URL.Path, "/api/v1/agents/asserted/")
+
+		switch r.Method {
+		case http.MethodGet:
+			fake.mu.Lock()
+			rec, ok := fake.records[shortID]
+			fake.mu.Unlock()
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"success": false,
+					"error":   "agent not found",
+				})
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success":      true,
+				"agentId":      rec.agentID,
+				"shortId":      shortID,
+				"displayName":  rec.displayName,
+				"status":       rec.status,
+				"isRegistered": rec.isRegistered,
+				"registeredBy": "orion_at_testtoken",
+			})
+		case http.MethodDelete:
+			fake.mu.Lock()
+			delete(fake.records, shortID)
+			fake.mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success":          true,
+				"archivedAgentIds": []string{"asserted|staging|claims-review"},
+			})
+		default:
 			http.NotFound(w, r)
-			return
 		}
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"success":          true,
-			"archivedAgentIds": []string{"asserted|staging|claims-review"},
-		})
 	})
 
-	return httptest.NewServer(mux)
+	fake.Server = httptest.NewServer(mux)
+	return fake
 }
 
 func TestAccAgentPathKeyDataSource_Basic(t *testing.T) {
@@ -184,6 +259,42 @@ resource "alterion_agent" "this" {
 					resource.TestCheckResourceAttr("alterion_agent.this", "display_name", "Claims Review Bot v2"),
 					resource.TestCheckResourceAttr("alterion_agent.this", "short_id", "e42ec80aebee"),
 				),
+			},
+		},
+	})
+}
+
+// TestAccAgentResource_RecreateOnMissing verifies that when the fake
+// server reports the agent as gone (GET-by-short-id 404s, e.g. because it
+// was archived directly against Orion outside of Terraform), the resource
+// is dropped from state on refresh and the next plan shows it needs to be
+// recreated, rather than silently going stale.
+func TestAccAgentResource_RecreateOnMissing(t *testing.T) {
+	server := newFakeOrionServer(t)
+	defer server.Close()
+
+	config := providerConfig(server.URL) + `
+resource "alterion_agent" "this" {
+  environment  = "staging"
+  slug         = "claims-review"
+  display_name = "Claims Review Bot"
+}
+`
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories(),
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("alterion_agent.this", "short_id", "e42ec80aebee"),
+				),
+			},
+			{
+				PreConfig:          func() { server.forget("e42ec80aebee") },
+				Config:             config,
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
 			},
 		},
 	})

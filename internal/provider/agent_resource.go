@@ -87,7 +87,7 @@ func (r *agentResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 			},
 			"auto_register_boundary": schema.StringAttribute{
 				Optional:    true,
-				Description: "Name of the boundary this agent should be auto-registered into, if any.",
+				Description: "Name of the Orion contextual boundary this agent is approved into on registration. When omitted, the agent lands in Shadow and is only captured, not enforced.",
 			},
 			"runtime_arn": schema.StringAttribute{
 				Optional:    true,
@@ -203,14 +203,11 @@ func (r *agentResource) Create(ctx context.Context, req resource.CreateRequest, 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &model)...)
 }
 
-// Read is intentionally minimal: the underlying REST API does not currently
-// expose a GET-by-short-id route for an asserted agent, only the path-key
-// lookup (which is derived, not a live existence/status check) and the
-// create/upsert route. We re-derive the path key to confirm the agent id
-// still resolves to the environment/slug pair in state, and otherwise keep
-// the previously stored status/is_registered/short_id as-is rather than
-// guessing. If the server later exposes a GET-by-shortId route, swap this
-// implementation to call it directly for authoritative status.
+// Read refreshes state via GET /api/v1/agents/asserted/{shortId}.
+// environment and slug are kept from state (the server doesn't echo them
+// back on this route). short_id also normally comes from state; if state
+// somehow has no short_id yet (e.g. an older state predating this field),
+// it is derived once via the path-key lookup before the GET.
 func (r *agentResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var model agentResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &model)...)
@@ -220,27 +217,44 @@ func (r *agentResource) Read(ctx context.Context, req resource.ReadRequest, resp
 
 	environment := model.Environment.ValueString()
 	slug := model.Slug.ValueString()
+	shortID := model.ShortID.ValueString()
 
-	result, err := r.client.GetPathKey(ctx, environment, slug)
+	if shortID == "" {
+		pathKey, err := r.client.GetPathKey(ctx, environment, slug)
+		if err != nil {
+			if apiErr, ok := err.(*client.APIError); ok && apiErr.Status == 404 {
+				resp.State.RemoveResource(ctx)
+				return
+			}
+			resp.Diagnostics.AddError(
+				"Error Reading Agent",
+				fmt.Sprintf("Could not resolve short id for agent environment=%q slug=%q: %s", environment, slug, err),
+			)
+			return
+		}
+		shortID = pathKey.ShortID
+	}
+
+	result, err := r.client.GetAgent(ctx, shortID)
 	if err != nil {
 		if apiErr, ok := err.(*client.APIError); ok && apiErr.Status == 404 {
-			// Agent no longer resolvable; remove from state.
+			// Agent missing or archived; remove from state.
 			resp.State.RemoveResource(ctx)
 			return
 		}
 		resp.Diagnostics.AddError(
 			"Error Reading Agent",
-			fmt.Sprintf("Could not read agent environment=%q slug=%q: %s", environment, slug, err),
+			fmt.Sprintf("Could not read agent short_id=%q: %s", shortID, err),
 		)
 		return
 	}
 
 	model.AgentID = types.StringValue(result.AgentID)
 	model.ShortID = types.StringValue(result.ShortID)
+	model.DisplayName = types.StringValue(result.DisplayName)
+	model.Status = types.StringValue(result.Status)
+	model.IsRegistered = types.BoolValue(result.IsRegistered)
 	model.ID = types.StringValue(result.AgentID)
-	// status and is_registered are left as previously stored: the path-key
-	// route does not report them, and re-POSTing here would mutate rather
-	// than merely observe state.
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &model)...)
 }

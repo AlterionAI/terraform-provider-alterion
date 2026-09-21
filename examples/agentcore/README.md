@@ -36,6 +36,11 @@ resolves traffic by short id regardless of whether the asserted-agent row is
 fully registered. Registration is what makes the agent visible and governed
 in Orion, but it doesn't gate the runtime's ability to talk to the gateway.
 
+This example sets `auto_register_boundary` from the required `orion_boundary`
+variable so the agent is approved into a real boundary the moment it
+registers; if you omit `auto_register_boundary` in your own configuration,
+the agent instead lands in Shadow, where it's only captured, not enforced.
+
 ## Slug convention
 
 The recommended slug shape is:
@@ -59,7 +64,8 @@ terraform plan \
   -var="aws_account_id=123456789012" \
   -var="aws_region=us-east-1" \
   -var="runtime_name=support-bot" \
-  -var="environment=production"
+  -var="environment=production" \
+  -var="orion_boundary=production-support"
 ```
 
 This example is for illustration — it references `aws_bedrockagentcore_agent_runtime`
