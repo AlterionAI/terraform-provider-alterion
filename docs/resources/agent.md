@@ -23,7 +23,7 @@ Registers an asserted Orion agent. This is the register-late half of the compute
 
 ### Optional
 
-- `adopt` (Boolean) When true, allows this resource to take over an agent row already owned by a different principal, and to delete it even if owned elsewhere. Defaults to false.
+- `adopt` (Boolean) When true, allows this resource to take over an agent row already owned by a different principal (including an organically header-asserted agent with no owner, which otherwise 409s on registration), and to delete it even if owned elsewhere. Defaults to false. Requires the provider's api_token to have been minted with adopt permission (allowAdopt: true, scope agents:automation:adopt); otherwise the API returns 403, which this provider surfaces as an error.
 - `auto_register_boundary` (String) Name of the Orion contextual boundary this agent is approved into on registration. When omitted, the agent lands in Shadow and is only captured, not enforced.
 - `aws_account_id` (String) AWS account id the runtime is deployed in.
 - `region` (String) Cloud region the runtime is deployed in.

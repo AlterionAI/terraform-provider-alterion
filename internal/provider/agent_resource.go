@@ -105,7 +105,7 @@ func (r *agentResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 				Optional:    true,
 				Computed:    true,
 				Default:     booldefault.StaticBool(false),
-				Description: "When true, allows this resource to take over an agent row already owned by a different principal, and to delete it even if owned elsewhere. Defaults to false.",
+				Description: "When true, allows this resource to take over an agent row already owned by a different principal (including an organically header-asserted agent with no owner, which otherwise 409s on registration), and to delete it even if owned elsewhere. Defaults to false. Requires the provider's api_token to have been minted with adopt permission (allowAdopt: true, scope agents:automation:adopt); otherwise the API returns 403, which this provider surfaces as an error.",
 			},
 			"agent_id": schema.StringAttribute{
 				Computed:    true,

@@ -63,7 +63,7 @@ func (p *AlterionProvider) Schema(_ context.Context, _ provider.SchemaRequest, r
 			"api_token": schema.StringAttribute{
 				Required:    true,
 				Sensitive:   true,
-				Description: "Orion API token (looks like orion_at_<hex>). May also be set via the ALTERION_API_TOKEN environment variable.",
+				Description: "Orion API token (looks like orion_at_<hex>). May also be set via the ALTERION_API_TOKEN environment variable. Ownership of anything this token registers is tied to the Orion user who minted it, not to the token itself, so rotating the token does not change ownership and a re-apply keeps working after rotation. Tokens expire (90 days by default) and stop working if the minting user loses the approver role; a 401 from the API surfaces as \"token rejected; mint a new one\".",
 			},
 			"gateway_url": schema.StringAttribute{
 				Optional:    true,

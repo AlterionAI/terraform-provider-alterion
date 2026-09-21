@@ -55,6 +55,15 @@ Orion API's 64-character limit for realistic runtime names — see the
 `runtime_name` variable's `validation` block in `main.tf` for the length
 check.
 
+If the chosen slug happens to already exist as an organically
+header-asserted agent (one Orion picked up on its own, with no owner yet),
+registration `409`s unless you set `adopt = true` on `alterion_agent.this`
+— and that only works if `ALTERION_API_TOKEN` was minted with adopt
+permission. See the root [README](../../README.md#ownership-and-adopt) for
+the full ownership/adopt contract, including why rotating the token doesn't
+require re-adopting anything and why `terraform destroy` + re-`apply`
+reactivates the same agent instead of creating a new one.
+
 ## Running this example
 
 ```bash

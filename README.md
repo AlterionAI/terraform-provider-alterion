@@ -75,6 +75,32 @@ resource "alterion_agent" "this" {
 short-id route to reconstruct `environment`/`slug`/`display_name` from a
 short id alone. Recreate the resource in configuration instead.
 
+## Ownership and `adopt`
+
+An agent's owner is the **Orion user who minted the automation token**
+(`api_token`) used to register it — recorded server-side as
+`registered_by = automation:user:<email>` — not the token itself. That
+means:
+
+- **Rotating the token doesn't change ownership.** Swap `ALTERION_API_TOKEN`
+  for a freshly minted token from the same user and `terraform apply` keeps
+  working against agents that token's predecessor registered.
+- **Tokens expire** (90 days by default) and stop working if the minting
+  user loses the approver role. The provider surfaces that as a `401` —
+  "token rejected; mint a new one" — not a permission error on the agent
+  itself.
+- **`adopt = true`** (on `alterion_agent` and on delete) lets this token
+  take over an agent row owned by a different principal, including an
+  organically header-asserted agent that has no owner yet (registering a
+  slug that collides with one of those otherwise `409`s). It only works if
+  the token itself was minted with adopt permission (`allowAdopt: true` at
+  mint time, scope `agents:automation:adopt`) — otherwise the API returns
+  `403`, which surfaces as a resource error regardless of how `adopt` is
+  set in configuration.
+- **Re-applying after `terraform destroy`** reactivates the archived agent
+  back into its boundary rather than minting a new one — the underlying
+  agent row isn't hard-deleted, `terraform destroy` archives it.
+
 ## Ordering: compute-early, register-late
 
 Putting the two together is the point of this provider. See
