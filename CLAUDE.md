@@ -29,9 +29,11 @@ this exists to support.
   `TF_ACC=1` and a `terraform` binary on `PATH` (or `TF_ACC_TERRAFORM_PATH`)
   to run, same as any `terraform-plugin-framework` provider.
 - `internal/client/contract_test.go` pins the short-id derivation
-  (`sha256("asserted|<env>|<slug>")[:12]`) to golden vectors from the Orion
-  server. If Orion's derivation ever changes, this test's failure is the
-  signal — update the vectors together with a coordinated Orion change.
+  (`sha256("asserted|<env>|<identityKey>")[:12]`, where `identityKey` is
+  `"<cloudProvider>.<cloudAccountId>.<cloudRegion>.<workloadName>"` — see
+  `client.IdentityKey`) to golden vectors from the Orion server. If Orion's
+  derivation ever changes, this test's failure is the signal — update the
+  vectors together with a coordinated Orion change.
 
 ## Local build/test
 

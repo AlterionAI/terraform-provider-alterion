@@ -17,12 +17,18 @@ Resolves the deterministic gateway path key for an asserted Orion agent, ahead o
 
 ### Required
 
+- `cloud_account_id` (String) Cloud account/project/subscription id the workload is (or will be) deployed in: a 12-digit AWS account id, a GCP project id, or an Azure subscription GUID, matching cloud_provider.
+- `cloud_region` (String) Cloud region the workload is (or will be) deployed in, e.g. us-east-1.
 - `environment` (String) One of production, staging, development.
-- `slug` (String) Stable slug identifying the agent within the environment, e.g. "<aws-account-id>-<region>-<runtime-name>". Must match ^[a-z0-9]+(?:-[a-z0-9]+)*$ and be at most 64 characters.
+- `workload_name` (String) Name of the workload (e.g. an AWS Bedrock AgentCore agent_runtime_name, a GCP Cloud Run service name, an ECS service name). Case-sensitive; must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$.
+
+### Optional
+
+- `cloud_provider` (String) One of aws, gcp, azure. Defaults to aws.
 
 ### Read-Only
 
-- `agent_id` (String) The full asserted agent id, of the form asserted|<environment>|<slug>.
+- `agent_id` (String) The full asserted agent id, of the form asserted|<environment>|<identity key derived from cloud_provider, cloud_account_id, cloud_region, workload_name>.
 - `gateway_base_url` (String) Full gateway base URL for this agent. Populated from the server response, or computed locally from the provider's gateway_url + path_prefix + short_id when the server returns null and gateway_url is configured.
 - `id` (String) Same value as agent_id.
 - `path_prefix` (String) Gateway path prefix segment (currently always "a").

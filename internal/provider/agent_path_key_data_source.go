@@ -8,6 +8,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
@@ -19,13 +20,31 @@ var (
 	_ datasource.DataSourceWithConfigure = &agentPathKeyDataSource{}
 )
 
-// slugPattern mirrors the server-side validation: lowercase alphanumerics
-// and hyphens, no leading/trailing/doubled hyphens, max 64 chars.
-var slugPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
-
-const maxSlugLength = 64
-
 var validEnvironments = []string{"production", "staging", "development"}
+
+// validCloudProviders enumerates the clouds this provider's cloud_provider
+// attribute accepts.
+var validCloudProviders = []string{"aws", "gcp", "azure"}
+
+// cloudAccountIDPatterns validates cloud_account_id per cloud_provider:
+// AWS account ids are 12 digits, GCP project ids follow GCP's own naming
+// rule, and Azure subscription ids are GUIDs.
+var cloudAccountIDPatterns = map[string]*regexp.Regexp{
+	"aws":   regexp.MustCompile(`^\d{12}$`),
+	"gcp":   regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`),
+	"azure": regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`),
+}
+
+// cloudRegionPattern is deliberately loose and cloud-agnostic: lowercase
+// alphanumerics and hyphens, matching AWS/GCP/Azure region name shapes
+// alike (e.g. us-east-1, us-central1, eastus).
+var cloudRegionPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
+
+// workloadNamePattern is the cloud-agnostic workload name shape: starts
+// with an alphanumeric, then alphanumerics/underscores/hyphens, up to 64
+// characters. Case-sensitive; no lowercasing or folding is applied here or
+// anywhere downstream — distinct names must stay distinct.
+var workloadNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 
 func NewAgentPathKeyDataSource() datasource.DataSource {
 	return &agentPathKeyDataSource{}
@@ -39,7 +58,10 @@ type agentPathKeyDataSource struct {
 type agentPathKeyDataSourceModel struct {
 	ID             types.String `tfsdk:"id"`
 	Environment    types.String `tfsdk:"environment"`
-	Slug           types.String `tfsdk:"slug"`
+	CloudProvider  types.String `tfsdk:"cloud_provider"`
+	CloudAccountID types.String `tfsdk:"cloud_account_id"`
+	CloudRegion    types.String `tfsdk:"cloud_region"`
+	WorkloadName   types.String `tfsdk:"workload_name"`
 	AgentID        types.String `tfsdk:"agent_id"`
 	ShortID        types.String `tfsdk:"short_id"`
 	PathPrefix     types.String `tfsdk:"path_prefix"`
@@ -65,16 +87,38 @@ func (d *agentPathKeyDataSource) Schema(_ context.Context, _ datasource.SchemaRe
 					environmentValidator{},
 				},
 			},
-			"slug": schema.StringAttribute{
-				Required:    true,
-				Description: "Stable slug identifying the agent within the environment, e.g. \"<aws-account-id>-<region>-<runtime-name>\". Must match ^[a-z0-9]+(?:-[a-z0-9]+)*$ and be at most 64 characters.",
+			"cloud_provider": schema.StringAttribute{
+				Optional:    true,
+				Computed:    true,
+				Description: "One of aws, gcp, azure. Defaults to aws.",
 				Validators: []validator.String{
-					slugValidator{},
+					cloudProviderValidator{},
+				},
+			},
+			"cloud_account_id": schema.StringAttribute{
+				Required:    true,
+				Description: "Cloud account/project/subscription id the workload is (or will be) deployed in: a 12-digit AWS account id, a GCP project id, or an Azure subscription GUID, matching cloud_provider.",
+				Validators: []validator.String{
+					cloudAccountIDValidator{},
+				},
+			},
+			"cloud_region": schema.StringAttribute{
+				Required:    true,
+				Description: "Cloud region the workload is (or will be) deployed in, e.g. us-east-1.",
+				Validators: []validator.String{
+					cloudRegionValidator{},
+				},
+			},
+			"workload_name": schema.StringAttribute{
+				Required:    true,
+				Description: "Name of the workload (e.g. an AWS Bedrock AgentCore agent_runtime_name, a GCP Cloud Run service name, an ECS service name). Case-sensitive; must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$.",
+				Validators: []validator.String{
+					workloadNameValidator{},
 				},
 			},
 			"agent_id": schema.StringAttribute{
 				Computed:    true,
-				Description: "The full asserted agent id, of the form asserted|<environment>|<slug>.",
+				Description: "The full asserted agent id, of the form asserted|<environment>|<identity key derived from cloud_provider, cloud_account_id, cloud_region, workload_name>.",
 			},
 			"short_id": schema.StringAttribute{
 				Computed:    true,
@@ -118,30 +162,36 @@ func (d *agentPathKeyDataSource) Read(ctx context.Context, req datasource.ReadRe
 	}
 
 	environment := model.Environment.ValueString()
-	slug := model.Slug.ValueString()
+	cloudProvider := defaultCloudProvider(model.CloudProvider)
+	identity := client.WorkloadIdentity{
+		CloudProvider:  cloudProvider,
+		CloudAccountID: model.CloudAccountID.ValueString(),
+		CloudRegion:    model.CloudRegion.ValueString(),
+		WorkloadName:   model.WorkloadName.ValueString(),
+	}
 
-	result, err := d.client.GetPathKey(ctx, environment, slug)
+	result, err := d.client.GetPathKey(ctx, environment, identity)
 	if err != nil {
 		if apiErr, ok := err.(*client.APIError); ok && apiErr.Status == 409 {
 			resp.Diagnostics.AddError(
 				"Short Id Collision",
-				fmt.Sprintf("The Orion API reported a short-id collision for environment=%q slug=%q: %s (existing agent id: %s)",
-					environment, slug, apiErr.Message, apiErr.ExistingAgentID),
+				fmt.Sprintf("The Orion API reported a short-id collision for environment=%q %s: %s (existing agent id: %s)",
+					environment, identitySummary(identity), apiErr.Message, apiErr.ExistingAgentID),
 			)
 			return
 		}
 		resp.Diagnostics.AddError(
 			"Error Reading Agent Path Key",
-			fmt.Sprintf("Could not read path key for environment=%q slug=%q: %s", environment, slug, err),
+			fmt.Sprintf("Could not read path key for environment=%q %s: %s", environment, identitySummary(identity), err),
 		)
 		return
 	}
 
-	if expected := client.ExpectedShortID(environment, slug); expected != result.ShortID {
+	if expected := client.ExpectedShortID(environment, client.IdentityKey(identity)); expected != result.ShortID {
 		resp.Diagnostics.AddWarning(
 			"Short Id Mismatch",
-			fmt.Sprintf("The server returned short_id %q for environment=%q slug=%q, but the locally expected value is %q. The server's value is authoritative and is what this data source uses; this warning only flags a possible drift in the derivation formula.",
-				result.ShortID, environment, slug, expected),
+			fmt.Sprintf("The server returned short_id %q for environment=%q %s, but the locally expected value is %q. The server's value is authoritative and is what this data source uses; this warning only flags a possible drift in the derivation formula.",
+				result.ShortID, environment, identitySummary(identity), expected),
 		)
 	}
 
@@ -150,6 +200,7 @@ func (d *agentPathKeyDataSource) Read(ctx context.Context, req datasource.ReadRe
 		gatewayBaseURL = strings.TrimRight(d.gatewayURL, "/") + "/" + result.PathPrefix + "/" + result.ShortID
 	}
 
+	model.CloudProvider = types.StringValue(cloudProvider)
 	model.ID = types.StringValue(result.AgentID)
 	model.AgentID = types.StringValue(result.AgentID)
 	model.ShortID = types.StringValue(result.ShortID)
@@ -157,6 +208,21 @@ func (d *agentPathKeyDataSource) Read(ctx context.Context, req datasource.ReadRe
 	model.GatewayBaseURL = types.StringValue(gatewayBaseURL)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &model)...)
+}
+
+// defaultCloudProvider returns "aws" when cloud_provider was left unset in
+// configuration, matching this attribute's documented default (data source
+// schemas have no built-in Default, so this is applied at Read time).
+func defaultCloudProvider(v types.String) string {
+	if v.IsNull() || v.IsUnknown() || v.ValueString() == "" {
+		return "aws"
+	}
+	return v.ValueString()
+}
+
+func identitySummary(identity client.WorkloadIdentity) string {
+	return fmt.Sprintf("cloud_provider=%q cloud_account_id=%q cloud_region=%q workload_name=%q",
+		identity.CloudProvider, identity.CloudAccountID, identity.CloudRegion, identity.WorkloadName)
 }
 
 // environmentValidator enforces the environment enum client-side, so
@@ -189,35 +255,126 @@ func (v environmentValidator) ValidateString(ctx context.Context, req validator.
 	)
 }
 
-// slugValidator enforces the slug regex and length limit client-side.
-type slugValidator struct{}
+// cloudProviderValidator enforces the cloud_provider enum client-side.
+type cloudProviderValidator struct{}
 
-func (v slugValidator) Description(_ context.Context) string {
-	return fmt.Sprintf("value must match %s and be at most %d characters", slugPattern.String(), maxSlugLength)
+func (v cloudProviderValidator) Description(_ context.Context) string {
+	return fmt.Sprintf("value must be one of: %s", strings.Join(validCloudProviders, ", "))
 }
 
-func (v slugValidator) MarkdownDescription(ctx context.Context) string {
+func (v cloudProviderValidator) MarkdownDescription(ctx context.Context) string {
 	return v.Description(ctx)
 }
 
-func (v slugValidator) ValidateString(ctx context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+func (v cloudProviderValidator) ValidateString(ctx context.Context, req validator.StringRequest, resp *validator.StringResponse) {
 	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
 		return
 	}
 	value := req.ConfigValue.ValueString()
-	if len(value) == 0 || len(value) > maxSlugLength {
-		resp.Diagnostics.AddAttributeError(
-			req.Path,
-			"Invalid Slug Length",
-			fmt.Sprintf("slug must be between 1 and %d characters, got %d", maxSlugLength, len(value)),
-		)
+	for _, valid := range validCloudProviders {
+		if value == valid {
+			return
+		}
+	}
+	resp.Diagnostics.AddAttributeError(
+		req.Path,
+		"Invalid Cloud Provider",
+		fmt.Sprintf("cloud_provider must be one of %s, got %q", strings.Join(validCloudProviders, ", "), value),
+	)
+}
+
+// cloudAccountIDValidator enforces cloud_account_id's format against
+// whichever cloud_provider is configured alongside it (defaulting to aws
+// when cloud_provider itself is unset, matching that attribute's default).
+type cloudAccountIDValidator struct{}
+
+func (v cloudAccountIDValidator) Description(_ context.Context) string {
+	return "value must be a valid account/project/subscription id for the configured cloud_provider"
+}
+
+func (v cloudAccountIDValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v cloudAccountIDValidator) ValidateString(ctx context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
 		return
 	}
-	if !slugPattern.MatchString(value) {
+	value := req.ConfigValue.ValueString()
+
+	var cloudProviderValue types.String
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("cloud_provider"), &cloudProviderValue)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if cloudProviderValue.IsUnknown() {
+		return
+	}
+	cloudProvider := defaultCloudProvider(cloudProviderValue)
+
+	pattern, ok := cloudAccountIDPatterns[cloudProvider]
+	if !ok {
+		// cloud_provider itself is invalid; that's cloudProviderValidator's
+		// job to report, not this validator's.
+		return
+	}
+	if !pattern.MatchString(value) {
 		resp.Diagnostics.AddAttributeError(
 			req.Path,
-			"Invalid Slug Format",
-			fmt.Sprintf("slug %q must match %s (lowercase alphanumeric segments separated by single hyphens)", value, slugPattern.String()),
+			"Invalid Cloud Account Id",
+			fmt.Sprintf("cloud_account_id %q must match %s for cloud_provider %q", value, pattern.String(), cloudProvider),
+		)
+	}
+}
+
+// cloudRegionValidator enforces the cloud region name format client-side.
+type cloudRegionValidator struct{}
+
+func (v cloudRegionValidator) Description(_ context.Context) string {
+	return fmt.Sprintf("value must match %s", cloudRegionPattern.String())
+}
+
+func (v cloudRegionValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v cloudRegionValidator) ValidateString(ctx context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	value := req.ConfigValue.ValueString()
+	if !cloudRegionPattern.MatchString(value) {
+		resp.Diagnostics.AddAttributeError(
+			req.Path,
+			"Invalid Cloud Region",
+			fmt.Sprintf("cloud_region %q must match %s (e.g. us-east-1)", value, cloudRegionPattern.String()),
+		)
+	}
+}
+
+// workloadNameValidator enforces the cloud-agnostic workload name format
+// client-side. Case-sensitive: no lowercasing or folding is applied here
+// or anywhere downstream.
+type workloadNameValidator struct{}
+
+func (v workloadNameValidator) Description(_ context.Context) string {
+	return fmt.Sprintf("value must match %s", workloadNamePattern.String())
+}
+
+func (v workloadNameValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v workloadNameValidator) ValidateString(ctx context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	value := req.ConfigValue.ValueString()
+	if !workloadNamePattern.MatchString(value) {
+		resp.Diagnostics.AddAttributeError(
+			req.Path,
+			"Invalid Workload Name",
+			fmt.Sprintf("workload_name %q must match %s (case-sensitive; starts with an alphanumeric, then letters/digits/underscores/hyphens, up to 64 characters)", value, workloadNamePattern.String()),
 		)
 	}
 }

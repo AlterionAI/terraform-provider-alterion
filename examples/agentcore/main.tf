@@ -10,11 +10,6 @@ terraform {
   }
 }
 
-variable "aws_account_id" {
-  type        = string
-  description = "AWS account id the AgentCore runtime is deployed in."
-}
-
 variable "aws_region" {
   type        = string
   description = "AWS region the AgentCore runtime is deployed in."
@@ -22,16 +17,7 @@ variable "aws_region" {
 
 variable "runtime_name" {
   type        = string
-  description = "Human-readable name of the AgentCore runtime."
-
-  validation {
-    # aws_account_id + "-" + aws_region + "-" + slugified runtime_name must
-    # fit in the 64 character slug limit enforced by the Orion API. This
-    # check only bounds the runtime_name part; combine with your own
-    # account id / region lengths when reviewing real values.
-    condition     = length(var.runtime_name) <= 64
-    error_message = "runtime_name must be at most 64 characters so the derived slug (\"${var.aws_account_id}-${var.aws_region}-<slug of runtime_name>\") stays within the Orion API's 64 character slug limit."
-  }
+  description = "Name of the AgentCore runtime (agent_runtime_name). Case-sensitive; must match AWS Bedrock AgentCore's own naming rule: starts with a letter, then letters/digits/underscores, up to 48 characters."
 }
 
 variable "environment" {
@@ -49,12 +35,13 @@ variable "orion_boundary" {
   description = "Name of the Orion contextual boundary this agent is approved into on registration. Required here (no default): when omitted, the agent lands in Shadow and is only captured, not enforced, which is not the intended default for this example."
 }
 
-locals {
-  # Recommended slug convention: <aws-account-id>-<region>-<runtime-name>,
-  # lowercased and with anything other than a-z0-9 collapsed to a single
-  # hyphen, matching the Orion API's slug regex.
-  slug = "${var.aws_account_id}-${var.aws_region}-${lower(replace(var.runtime_name, "/[^A-Za-z0-9]+/", "-"))}"
+provider "aws" {
+  region = var.aws_region
 }
+
+# Used to fill cloud_account_id below without hardcoding it — this example
+# never asks the caller for their AWS account id directly.
+data "aws_caller_identity" "current" {}
 
 provider "alterion" {
   # orion_url and api_token can also come from ALTERION_ORION_URL /
@@ -68,13 +55,18 @@ provider "alterion" {
 }
 
 # STEP 1 — compute the agent's gateway path key BEFORE the runtime exists.
-# This is deterministic (a hash of environment + slug), so it can be known
-# ahead of time and baked into the runtime's own environment variables at
-# creation, instead of requiring a second deploy once the agent is
-# registered.
+# This is deterministic (a hash of environment + the workload's identity),
+# so it can be known ahead of time and baked into the runtime's own
+# environment variables at creation, instead of requiring a second deploy
+# once the agent is registered. Note this data source uses var.runtime_name
+# directly, not the resource's attribute below — it cannot depend on a
+# runtime that doesn't exist yet. cloud_provider defaults to "aws" and is
+# left unset here.
 data "alterion_agent_path_key" "this" {
-  environment = var.environment
-  slug        = local.slug
+  environment      = var.environment
+  cloud_account_id = data.aws_caller_identity.current.account_id
+  cloud_region     = var.aws_region
+  workload_name    = var.runtime_name
 }
 
 # STEP 2 — create the runtime, pointing its outbound LLM traffic at the
@@ -86,7 +78,7 @@ resource "aws_bedrockagentcore_agent_runtime" "this" {
 
   agent_runtime_artifact {
     container_configuration {
-      container_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/example-agent:latest"
+      container_uri = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com/example-agent:latest"
     }
   }
 
@@ -101,18 +93,17 @@ resource "aws_bedrockagentcore_agent_runtime" "this" {
 }
 
 # STEP 3 — register the agent with Orion now that the runtime exists and
-# has an ARN. depends_on is explicit (not inferred) because runtime_arn is
-# a plain string, not a reference the provider graph would otherwise pick
-# up as a dependency edge on its own here.
+# has an ARN. workload_name and workload_resource_id both reference the
+# runtime resource directly, so Terraform infers the dependency; depends_on
+# is kept explicit anyway for clarity.
 resource "alterion_agent" "this" {
-  environment            = var.environment
-  slug                   = local.slug
-  display_name           = var.runtime_name
-  runtime_arn            = aws_bedrockagentcore_agent_runtime.this.agent_runtime_arn
+  environment           = var.environment
+  cloud_account_id      = data.aws_caller_identity.current.account_id
+  cloud_region          = var.aws_region
+  workload_name         = aws_bedrockagentcore_agent_runtime.this.agent_runtime_name
+  workload_resource_id  = aws_bedrockagentcore_agent_runtime.this.agent_runtime_arn
+  workload_type         = "bedrock-agentcore-runtime"
   auto_register_boundary = var.orion_boundary
-
-  aws_account_id = var.aws_account_id
-  region         = var.aws_region
 
   depends_on = [aws_bedrockagentcore_agent_runtime.this]
 }

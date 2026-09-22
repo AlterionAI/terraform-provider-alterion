@@ -26,13 +26,15 @@ func TestGetPathKey_Success(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "Bearer orion_at_testtoken" {
 			t.Errorf("unexpected auth header: %s", got)
 		}
-		if r.URL.Query().Get("environment") != "staging" || r.URL.Query().Get("slug") != "claims-review" {
+		q := r.URL.Query()
+		if q.Get("environment") != "staging" || q.Get("cloudProvider") != "aws" || q.Get("cloudAccountId") != "123456789012" ||
+			q.Get("cloudRegion") != "us-west-2" || q.Get("workloadName") != "claims-review" {
 			t.Errorf("unexpected query: %s", r.URL.RawQuery)
 		}
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(PathKeyResponse{
 			Success:        true,
-			AgentID:        "asserted|staging|claims-review",
+			AgentID:        "asserted|staging|aws.123456789012.us-west-2.claims-review",
 			ShortID:        "e42ec80aebee",
 			PathPrefix:     "a",
 			GatewayBaseURL: "https://gw.example.com/a/e42ec80aebee",
@@ -40,7 +42,8 @@ func TestGetPathKey_Success(t *testing.T) {
 	})
 	defer closeFn()
 
-	resp, err := c.GetPathKey(context.Background(), "staging", "claims-review")
+	identity := WorkloadIdentity{CloudProvider: "aws", CloudAccountID: "123456789012", CloudRegion: "us-west-2", WorkloadName: "claims-review"}
+	resp, err := c.GetPathKey(context.Background(), "staging", identity)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -58,12 +61,13 @@ func TestGetPathKey_Collision409(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(errorBody{
 			Success:         false,
 			Error:           "short id collision",
-			ExistingAgentID: "asserted|staging|other-slug",
+			ExistingAgentID: "asserted|staging|aws.123456789012.us-west-2.other-workload",
 		})
 	})
 	defer closeFn()
 
-	_, err := c.GetPathKey(context.Background(), "staging", "claims-review")
+	identity := WorkloadIdentity{CloudProvider: "aws", CloudAccountID: "123456789012", CloudRegion: "us-west-2", WorkloadName: "claims-review"}
+	_, err := c.GetPathKey(context.Background(), "staging", identity)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -74,7 +78,7 @@ func TestGetPathKey_Collision409(t *testing.T) {
 	if apiErr.Status != http.StatusConflict {
 		t.Errorf("expected status 409, got %d", apiErr.Status)
 	}
-	if apiErr.ExistingAgentID != "asserted|staging|other-slug" {
+	if apiErr.ExistingAgentID != "asserted|staging|aws.123456789012.us-west-2.other-workload" {
 		t.Errorf("unexpected existing agent id: %s", apiErr.ExistingAgentID)
 	}
 }
@@ -82,16 +86,17 @@ func TestGetPathKey_Collision409(t *testing.T) {
 func TestGetPathKey_BadRequest400(t *testing.T) {
 	c, closeFn := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(errorBody{Success: false, Error: "invalid slug"})
+		_ = json.NewEncoder(w).Encode(errorBody{Success: false, Error: "invalid workload name"})
 	})
 	defer closeFn()
 
-	_, err := c.GetPathKey(context.Background(), "staging", "Bad Slug")
+	identity := WorkloadIdentity{CloudProvider: "aws", CloudAccountID: "123456789012", CloudRegion: "us-west-2", WorkloadName: "Bad Name"}
+	_, err := c.GetPathKey(context.Background(), "staging", identity)
 	apiErr, ok := err.(*APIError)
 	if !ok {
 		t.Fatalf("expected *APIError, got %T (%v)", err, err)
 	}
-	if apiErr.Status != http.StatusBadRequest || apiErr.Message != "invalid slug" {
+	if apiErr.Status != http.StatusBadRequest || apiErr.Message != "invalid workload name" {
 		t.Errorf("unexpected error: %+v", apiErr)
 	}
 }
@@ -103,7 +108,8 @@ func TestGetPathKey_Unauthorized401(t *testing.T) {
 	})
 	defer closeFn()
 
-	_, err := c.GetPathKey(context.Background(), "staging", "claims-review")
+	identity := WorkloadIdentity{CloudProvider: "aws", CloudAccountID: "123456789012", CloudRegion: "us-west-2", WorkloadName: "claims-review"}
+	_, err := c.GetPathKey(context.Background(), "staging", identity)
 	apiErr, ok := err.(*APIError)
 	if !ok || apiErr.Status != http.StatusUnauthorized {
 		t.Fatalf("expected 401 APIError, got %v", err)
@@ -121,7 +127,7 @@ func TestGetAgent_Success(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(AgentResponse{
 			Success:      true,
-			AgentID:      "asserted|production|123456789012-us-east-1-support-bot",
+			AgentID:      "asserted|production|aws.123456789012.us-east-1.support-bot",
 			ShortID:      "75a30ffb2baa",
 			DisplayName:  "Support Bot",
 			Status:       "active",
@@ -169,13 +175,14 @@ func TestCreateAgent_Success(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("failed to decode body: %v", err)
 		}
-		if body.Environment != "production" || body.Slug != "123456789012-us-east-1-support-bot" {
+		if body.Environment != "production" || body.CloudProvider != "aws" || body.CloudAccountID != "123456789012" ||
+			body.CloudRegion != "us-east-1" || body.WorkloadName != "support-bot" {
 			t.Errorf("unexpected body: %+v", body)
 		}
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(CreateAgentResponse{
 			Success:      true,
-			AgentID:      "asserted|production|123456789012-us-east-1-support-bot",
+			AgentID:      "asserted|production|aws.123456789012.us-east-1.support-bot",
 			ShortID:      "75a30ffb2baa",
 			Status:       "active",
 			IsRegistered: true,
@@ -185,9 +192,12 @@ func TestCreateAgent_Success(t *testing.T) {
 	defer closeFn()
 
 	resp, err := c.CreateAgent(context.Background(), CreateAgentRequest{
-		Environment: "production",
-		Slug:        "123456789012-us-east-1-support-bot",
-		DisplayName: "Support Bot",
+		Environment:    "production",
+		CloudProvider:  "aws",
+		CloudAccountID: "123456789012",
+		CloudRegion:    "us-east-1",
+		WorkloadName:   "support-bot",
+		DisplayName:    "Support Bot",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -204,7 +214,7 @@ func TestCreateAgent_Conflict409(t *testing.T) {
 	})
 	defer closeFn()
 
-	_, err := c.CreateAgent(context.Background(), CreateAgentRequest{Environment: "production", Slug: "x", DisplayName: "X"})
+	_, err := c.CreateAgent(context.Background(), CreateAgentRequest{Environment: "production", CloudProvider: "aws", CloudAccountID: "123456789012", CloudRegion: "us-east-1", WorkloadName: "x", DisplayName: "X"})
 	apiErr, ok := err.(*APIError)
 	if !ok || apiErr.Status != http.StatusConflict {
 		t.Fatalf("expected 409 APIError, got %v", err)
@@ -222,7 +232,7 @@ func TestDeleteAgent_Success(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(DeleteAgentResponse{
 			Success:          true,
-			ArchivedAgentIDs: []string{"asserted|production|123456789012-us-east-1-support-bot"},
+			ArchivedAgentIDs: []string{"asserted|production|aws.123456789012.us-east-1.support-bot"},
 		})
 	})
 	defer closeFn()

@@ -65,11 +65,26 @@ type PathKeyResponse struct {
 	GatewayBaseURL string `json:"gatewayBaseUrl"`
 }
 
+// WorkloadIdentity is the cloud-agnostic identity of a workload within an
+// Orion environment: which cloud, which account/project/subscription,
+// which region, and the workload's own name. It is sent to the API as
+// structured fields (never joined into a single string) on both
+// GetPathKey and CreateAgent.
+type WorkloadIdentity struct {
+	CloudProvider  string
+	CloudAccountID string
+	CloudRegion    string
+	WorkloadName   string
+}
+
 // GetPathKey calls GET /api/v1/agents/asserted/path-key.
-func (c *Client) GetPathKey(ctx context.Context, environment, slug string) (*PathKeyResponse, error) {
+func (c *Client) GetPathKey(ctx context.Context, environment string, identity WorkloadIdentity) (*PathKeyResponse, error) {
 	q := url.Values{}
 	q.Set("environment", environment)
-	q.Set("slug", slug)
+	q.Set("cloudProvider", identity.CloudProvider)
+	q.Set("cloudAccountId", identity.CloudAccountID)
+	q.Set("cloudRegion", identity.CloudRegion)
+	q.Set("workloadName", identity.WorkloadName)
 	path := "/api/v1/agents/asserted/path-key?" + q.Encode()
 
 	var out PathKeyResponse
@@ -103,15 +118,19 @@ func (c *Client) GetAgent(ctx context.Context, shortID string) (*AgentResponse, 
 	return &out, nil
 }
 
-// CreateAgentRequest is the body of POST /api/v1/agents/asserted.
+// CreateAgentRequest is the body of POST /api/v1/agents/asserted. The
+// workload identity is sent as structured fields, never joined into a
+// single string.
 type CreateAgentRequest struct {
 	Environment          string `json:"environment"`
-	Slug                 string `json:"slug"`
+	CloudProvider        string `json:"cloudProvider"`
+	CloudAccountID       string `json:"cloudAccountId"`
+	CloudRegion          string `json:"cloudRegion"`
+	WorkloadName         string `json:"workloadName"`
+	WorkloadResourceID   string `json:"workloadResourceId,omitempty"`
+	WorkloadType         string `json:"workloadType,omitempty"`
 	DisplayName          string `json:"displayName"`
 	AutoRegisterBoundary string `json:"autoRegisterBoundaryName,omitempty"`
-	RuntimeARN           string `json:"runtimeArn,omitempty"`
-	AWSAccountID         string `json:"awsAccountId,omitempty"`
-	Region               string `json:"region,omitempty"`
 	Adopt                bool   `json:"adopt,omitempty"`
 }
 
@@ -126,7 +145,8 @@ type CreateAgentResponse struct {
 }
 
 // CreateAgent calls POST /api/v1/agents/asserted. It is also used for
-// updates: the server upserts on (environment, slug).
+// updates: the server upserts on (environment, cloud_provider,
+// cloud_account_id, cloud_region, workload_name).
 func (c *Client) CreateAgent(ctx context.Context, req CreateAgentRequest) (*CreateAgentResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -224,11 +244,23 @@ func bytesReader(b []byte) io.Reader {
 	return bytes.NewReader(b)
 }
 
-// ExpectedShortID reproduces the server's short-id derivation locally:
-// the first 12 hex characters of sha256("asserted|<environment>|<slug>").
-// It exists ONLY for tests and for a diagnostic warning in the data source
-// (the server's response is always authoritative for the real value).
-func ExpectedShortID(environment, slug string) string {
-	sum := sha256.Sum256([]byte("asserted|" + environment + "|" + slug))
+// ExpectedShortID reproduces the server's short-id derivation locally: the
+// first 12 hex characters of sha256("asserted|<environment>|<identityKey>"),
+// where identityKey is IdentityKey's output. It exists ONLY for tests and
+// for a diagnostic warning in the data source (the server's response is
+// always authoritative for the real value).
+func ExpectedShortID(environment, identityKey string) string {
+	sum := sha256.Sum256([]byte("asserted|" + environment + "|" + identityKey))
 	return hex.EncodeToString(sum[:])[:12]
+}
+
+// IdentityKey reproduces, for the local ExpectedShortID diagnostic ONLY,
+// the server's internal composition of a workload's identity into the
+// single string it hashes to derive the short id:
+// "<cloudProvider>.<cloudAccountId>.<cloudRegion>.<workloadName>". This
+// join never appears on the wire — GetPathKey and CreateAgent always send
+// the four fields structured — and workloadName is used verbatim and
+// case-sensitive, no lowercasing or folding.
+func IdentityKey(identity WorkloadIdentity) string {
+	return fmt.Sprintf("%s.%s.%s.%s", identity.CloudProvider, identity.CloudAccountID, identity.CloudRegion, identity.WorkloadName)
 }

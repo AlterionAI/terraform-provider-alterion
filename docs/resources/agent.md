@@ -3,12 +3,12 @@
 page_title: "alterion_agent Resource - alterion"
 subcategory: ""
 description: |-
-  Registers an asserted Orion agent. This is the register-late half of the compute-early/register-late pattern: create the runtime first (using the alterion_agent_path_key data source to compute its gateway URL ahead of time), then register it here with the runtime's identifying details.
+  Registers an asserted Orion agent. This is the register-late half of the compute-early/register-late pattern: create the runtime first (using the alterion_agent_path_key data source to compute its gateway URL ahead of time), then register it here with the workload's identifying details.
 ---
 
 # alterion_agent (Resource)
 
-Registers an asserted Orion agent. This is the register-late half of the compute-early/register-late pattern: create the runtime first (using the alterion_agent_path_key data source to compute its gateway URL ahead of time), then register it here with the runtime's identifying details.
+Registers an asserted Orion agent. This is the register-late half of the compute-early/register-late pattern: create the runtime first (using the alterion_agent_path_key data source to compute its gateway URL ahead of time), then register it here with the workload's identifying details.
 
 
 
@@ -17,21 +17,23 @@ Registers an asserted Orion agent. This is the register-late half of the compute
 
 ### Required
 
-- `display_name` (String) Human-readable display name for the agent.
+- `cloud_account_id` (String) Cloud account/project/subscription id the workload is deployed in: a 12-digit AWS account id, a GCP project id, or an Azure subscription GUID, matching cloud_provider. Changing this forces a new resource.
+- `cloud_region` (String) Cloud region the workload is deployed in, e.g. us-east-1. Changing this forces a new resource.
 - `environment` (String) One of production, staging, development. Changing this forces a new resource.
-- `slug` (String) Stable slug identifying the agent within the environment. Must match ^[a-z0-9]+(?:-[a-z0-9]+)*$ and be at most 64 characters. Changing this forces a new resource.
+- `workload_name` (String) Name of the workload (e.g. an AWS Bedrock AgentCore agent_runtime_name, a GCP Cloud Run service name, an ECS service name). Case-sensitive; must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$. Changing this forces a new resource.
 
 ### Optional
 
 - `adopt` (Boolean) When true, allows this resource to take over an agent row already owned by a different principal (including an organically header-asserted agent with no owner, which otherwise 409s on registration), and to delete it even if owned elsewhere. Defaults to false. Requires the provider's api_token to have been minted with adopt permission (allowAdopt: true, scope agents:automation:adopt); otherwise the API returns 403, which this provider surfaces as an error.
 - `auto_register_boundary` (String) Name of the Orion contextual boundary this agent is approved into on registration. When omitted, the agent lands in Shadow and is only captured, not enforced.
-- `aws_account_id` (String) AWS account id the runtime is deployed in.
-- `region` (String) Cloud region the runtime is deployed in.
-- `runtime_arn` (String) ARN of the underlying runtime (e.g. an AWS Bedrock AgentCore runtime), once it exists.
+- `cloud_provider` (String) One of aws, gcp, azure. Defaults to aws. Changing this forces a new resource.
+- `display_name` (String) Human-readable display name for the agent. Defaults to workload_name when omitted.
+- `workload_resource_id` (String) The workload's own post-create unique id once it exists: an AWS ARN, a GCP full resource name, or an Azure resource id.
+- `workload_type` (String) Override for the workload's type, e.g. bedrock-agentcore-runtime, ecs-service, cloud-run-service. When omitted, the server infers it from workload_resource_id.
 
 ### Read-Only
 
-- `agent_id` (String) The full asserted agent id, of the form asserted|<environment>|<slug>.
+- `agent_id` (String) The full asserted agent id, of the form asserted|<environment>|<identity key derived from cloud_provider, cloud_account_id, cloud_region, workload_name>.
 - `id` (String) Same value as agent_id.
 - `is_registered` (Boolean) Whether the agent is fully registered on the server.
 - `short_id` (String) 12 hex character short id derived from the agent id.

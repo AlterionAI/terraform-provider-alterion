@@ -5,10 +5,12 @@ import (
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -33,12 +35,14 @@ type agentResource struct {
 type agentResourceModel struct {
 	ID                   types.String `tfsdk:"id"`
 	Environment          types.String `tfsdk:"environment"`
-	Slug                 types.String `tfsdk:"slug"`
+	CloudProvider        types.String `tfsdk:"cloud_provider"`
+	CloudAccountID       types.String `tfsdk:"cloud_account_id"`
+	CloudRegion          types.String `tfsdk:"cloud_region"`
+	WorkloadName         types.String `tfsdk:"workload_name"`
+	WorkloadResourceID   types.String `tfsdk:"workload_resource_id"`
+	WorkloadType         types.String `tfsdk:"workload_type"`
 	DisplayName          types.String `tfsdk:"display_name"`
 	AutoRegisterBoundary types.String `tfsdk:"auto_register_boundary"`
-	RuntimeARN           types.String `tfsdk:"runtime_arn"`
-	AWSAccountID         types.String `tfsdk:"aws_account_id"`
-	Region               types.String `tfsdk:"region"`
 	Adopt                types.Bool   `tfsdk:"adopt"`
 	AgentID              types.String `tfsdk:"agent_id"`
 	ShortID              types.String `tfsdk:"short_id"`
@@ -52,7 +56,7 @@ func (r *agentResource) Metadata(_ context.Context, req resource.MetadataRequest
 
 func (r *agentResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Registers an asserted Orion agent. This is the register-late half of the compute-early/register-late pattern: create the runtime first (using the alterion_agent_path_key data source to compute its gateway URL ahead of time), then register it here with the runtime's identifying details.",
+		Description: "Registers an asserted Orion agent. This is the register-late half of the compute-early/register-late pattern: create the runtime first (using the alterion_agent_path_key data source to compute its gateway URL ahead of time), then register it here with the workload's identifying details.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:    true,
@@ -71,35 +75,70 @@ func (r *agentResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
-			"slug": schema.StringAttribute{
-				Required:    true,
-				Description: "Stable slug identifying the agent within the environment. Must match ^[a-z0-9]+(?:-[a-z0-9]+)*$ and be at most 64 characters. Changing this forces a new resource.",
+			"cloud_provider": schema.StringAttribute{
+				Optional:    true,
+				Computed:    true,
+				Default:     stringdefault.StaticString("aws"),
+				Description: "One of aws, gcp, azure. Defaults to aws. Changing this forces a new resource.",
 				Validators: []validator.String{
-					slugValidator{},
+					cloudProviderValidator{},
 				},
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
-			"display_name": schema.StringAttribute{
+			"cloud_account_id": schema.StringAttribute{
 				Required:    true,
-				Description: "Human-readable display name for the agent.",
+				Description: "Cloud account/project/subscription id the workload is deployed in: a 12-digit AWS account id, a GCP project id, or an Azure subscription GUID, matching cloud_provider. Changing this forces a new resource.",
+				Validators: []validator.String{
+					cloudAccountIDValidator{},
+				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"cloud_region": schema.StringAttribute{
+				Required:    true,
+				Description: "Cloud region the workload is deployed in, e.g. us-east-1. Changing this forces a new resource.",
+				Validators: []validator.String{
+					cloudRegionValidator{},
+				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"workload_name": schema.StringAttribute{
+				Required:    true,
+				Description: "Name of the workload (e.g. an AWS Bedrock AgentCore agent_runtime_name, a GCP Cloud Run service name, an ECS service name). Case-sensitive; must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$. Changing this forces a new resource.",
+				Validators: []validator.String{
+					workloadNameValidator{},
+				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"workload_resource_id": schema.StringAttribute{
+				Optional:    true,
+				Description: "The workload's own post-create unique id once it exists: an AWS ARN, a GCP full resource name, or an Azure resource id.",
+				Validators: []validator.String{
+					workloadResourceIDValidator{},
+				},
+			},
+			"workload_type": schema.StringAttribute{
+				Optional:    true,
+				Description: "Override for the workload's type, e.g. bedrock-agentcore-runtime, ecs-service, cloud-run-service. When omitted, the server infers it from workload_resource_id.",
+			},
+			"display_name": schema.StringAttribute{
+				Optional:    true,
+				Computed:    true,
+				Description: "Human-readable display name for the agent. Defaults to workload_name when omitted.",
+				PlanModifiers: []planmodifier.String{
+					defaultToWorkloadNameModifier{},
+				},
 			},
 			"auto_register_boundary": schema.StringAttribute{
 				Optional:    true,
 				Description: "Name of the Orion contextual boundary this agent is approved into on registration. When omitted, the agent lands in Shadow and is only captured, not enforced.",
-			},
-			"runtime_arn": schema.StringAttribute{
-				Optional:    true,
-				Description: "ARN of the underlying runtime (e.g. an AWS Bedrock AgentCore runtime), once it exists.",
-			},
-			"aws_account_id": schema.StringAttribute{
-				Optional:    true,
-				Description: "AWS account id the runtime is deployed in.",
-			},
-			"region": schema.StringAttribute{
-				Optional:    true,
-				Description: "Cloud region the runtime is deployed in.",
 			},
 			"adopt": schema.BoolAttribute{
 				Optional:    true,
@@ -109,7 +148,7 @@ func (r *agentResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 			},
 			"agent_id": schema.StringAttribute{
 				Computed:    true,
-				Description: "The full asserted agent id, of the form asserted|<environment>|<slug>.",
+				Description: "The full asserted agent id, of the form asserted|<environment>|<identity key derived from cloud_provider, cloud_account_id, cloud_region, workload_name>.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
@@ -150,15 +189,27 @@ func (r *agentResource) Configure(_ context.Context, req resource.ConfigureReque
 	r.client = data.Client
 }
 
+func (r *agentResource) identity(model *agentResourceModel) client.WorkloadIdentity {
+	return client.WorkloadIdentity{
+		CloudProvider:  defaultCloudProvider(model.CloudProvider),
+		CloudAccountID: model.CloudAccountID.ValueString(),
+		CloudRegion:    model.CloudRegion.ValueString(),
+		WorkloadName:   model.WorkloadName.ValueString(),
+	}
+}
+
 func (r *agentResource) createOrUpdate(ctx context.Context, model *agentResourceModel, diags *diag.Diagnostics) {
+	identity := r.identity(model)
 	req := client.CreateAgentRequest{
 		Environment:          model.Environment.ValueString(),
-		Slug:                 model.Slug.ValueString(),
+		CloudProvider:        identity.CloudProvider,
+		CloudAccountID:       identity.CloudAccountID,
+		CloudRegion:          identity.CloudRegion,
+		WorkloadName:         identity.WorkloadName,
+		WorkloadResourceID:   model.WorkloadResourceID.ValueString(),
+		WorkloadType:         model.WorkloadType.ValueString(),
 		DisplayName:          model.DisplayName.ValueString(),
 		AutoRegisterBoundary: model.AutoRegisterBoundary.ValueString(),
-		RuntimeARN:           model.RuntimeARN.ValueString(),
-		AWSAccountID:         model.AWSAccountID.ValueString(),
-		Region:               model.Region.ValueString(),
 		Adopt:                model.Adopt.ValueBool(),
 	}
 
@@ -167,18 +218,19 @@ func (r *agentResource) createOrUpdate(ctx context.Context, model *agentResource
 		if apiErr, ok := err.(*client.APIError); ok && apiErr.Status == 409 {
 			diags.AddError(
 				"Agent Owned By Another Principal",
-				fmt.Sprintf("The Orion API reports environment=%q slug=%q is owned by a different principal: %s. Set adopt = true to take ownership.",
-					req.Environment, req.Slug, apiErr.Message),
+				fmt.Sprintf("The Orion API reports environment=%q %s is owned by a different principal: %s. Set adopt = true to take ownership.",
+					req.Environment, identitySummary(identity), apiErr.Message),
 			)
 			return
 		}
 		diags.AddError(
 			"Error Creating/Updating Agent",
-			fmt.Sprintf("Could not create/update agent environment=%q slug=%q: %s", req.Environment, req.Slug, err),
+			fmt.Sprintf("Could not create/update agent environment=%q %s: %s", req.Environment, identitySummary(identity), err),
 		)
 		return
 	}
 
+	model.CloudProvider = types.StringValue(identity.CloudProvider)
 	model.AgentID = types.StringValue(result.AgentID)
 	model.ShortID = types.StringValue(result.ShortID)
 	model.Status = types.StringValue(result.Status)
@@ -204,10 +256,11 @@ func (r *agentResource) Create(ctx context.Context, req resource.CreateRequest, 
 }
 
 // Read refreshes state via GET /api/v1/agents/asserted/{shortId}.
-// environment and slug are kept from state (the server doesn't echo them
-// back on this route). short_id also normally comes from state; if state
-// somehow has no short_id yet (e.g. an older state predating this field),
-// it is derived once via the path-key lookup before the GET.
+// environment and the identity attributes (cloud_provider, cloud_account_id,
+// cloud_region, workload_name) are kept from state (the server doesn't echo
+// them back on this route). short_id also normally comes from state; if
+// state somehow has no short_id yet (e.g. an older state predating this
+// field), it is derived once via the path-key lookup before the GET.
 func (r *agentResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var model agentResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &model)...)
@@ -216,11 +269,11 @@ func (r *agentResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	}
 
 	environment := model.Environment.ValueString()
-	slug := model.Slug.ValueString()
+	identity := r.identity(&model)
 	shortID := model.ShortID.ValueString()
 
 	if shortID == "" {
-		pathKey, err := r.client.GetPathKey(ctx, environment, slug)
+		pathKey, err := r.client.GetPathKey(ctx, environment, identity)
 		if err != nil {
 			if apiErr, ok := err.(*client.APIError); ok && apiErr.Status == 404 {
 				resp.State.RemoveResource(ctx)
@@ -228,7 +281,7 @@ func (r *agentResource) Read(ctx context.Context, req resource.ReadRequest, resp
 			}
 			resp.Diagnostics.AddError(
 				"Error Reading Agent",
-				fmt.Sprintf("Could not resolve short id for agent environment=%q slug=%q: %s", environment, slug, err),
+				fmt.Sprintf("Could not resolve short id for agent environment=%q %s: %s", environment, identitySummary(identity), err),
 			)
 			return
 		}
@@ -299,12 +352,74 @@ func (r *agentResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 }
 
 // ImportState is out of scope: import-by-short-id would need a GET-by-
-// short-id route to reconstruct environment/slug/display_name, which the
-// API does not currently expose. Document this in the README rather than
+// short-id route to reconstruct environment/cloud_provider/
+// cloud_account_id/cloud_region/workload_name/display_name, which the API
+// does not currently expose. Document this in the README rather than
 // implementing a lossy import.
 func (r *agentResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resp.Diagnostics.AddError(
 		"Import Not Supported",
-		"alterion_agent does not support terraform import: the Orion API has no GET-by-short-id route to reconstruct environment, slug, and display_name from a short id alone. Recreate the resource in configuration instead.",
+		"alterion_agent does not support terraform import: the Orion API has no GET-by-short-id route to reconstruct environment, cloud_provider, cloud_account_id, cloud_region, workload_name, and display_name from a short id alone. Recreate the resource in configuration instead.",
 	)
+}
+
+// workloadResourceIDValidator enforces that, if set, workload_resource_id
+// is non-empty and at most 2048 characters. It carries no cloud-specific
+// shape validation (AWS ARN vs. GCP full resource name vs. Azure resource
+// id) — the server is the source of truth for that.
+type workloadResourceIDValidator struct{}
+
+func (v workloadResourceIDValidator) Description(_ context.Context) string {
+	return "value must be non-empty and at most 2048 characters"
+}
+
+func (v workloadResourceIDValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v workloadResourceIDValidator) ValidateString(ctx context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	value := req.ConfigValue.ValueString()
+	if len(value) == 0 || len(value) > 2048 {
+		resp.Diagnostics.AddAttributeError(
+			req.Path,
+			"Invalid Workload Resource Id",
+			fmt.Sprintf("workload_resource_id must be non-empty and at most 2048 characters, got %d", len(value)),
+		)
+	}
+}
+
+// defaultToWorkloadNameModifier defaults display_name to the configured
+// workload_name when display_name is omitted from configuration.
+// Terraform's declarative "default" helpers only support static/
+// computed-from-nothing values, not a default derived from a sibling
+// attribute, so this is implemented as a plan modifier instead.
+type defaultToWorkloadNameModifier struct{}
+
+func (m defaultToWorkloadNameModifier) Description(_ context.Context) string {
+	return "Defaults display_name to workload_name when display_name is not set in configuration."
+}
+
+func (m defaultToWorkloadNameModifier) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (m defaultToWorkloadNameModifier) PlanModifyString(ctx context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	// Only fill in a default when display_name is genuinely absent from
+	// configuration; an explicit value (including one already in state)
+	// is left alone.
+	if !req.ConfigValue.IsNull() {
+		return
+	}
+
+	var workloadName types.String
+	diags := req.Config.GetAttribute(ctx, path.Root("workload_name"), &workloadName)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() || workloadName.IsNull() || workloadName.IsUnknown() {
+		return
+	}
+
+	resp.PlanValue = workloadName
 }
