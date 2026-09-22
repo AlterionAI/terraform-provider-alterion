@@ -237,6 +237,14 @@ func (r *agentResource) createOrUpdate(ctx context.Context, model *agentResource
 			)
 			return
 		}
+		if apiErr, ok := err.(*client.APIError); ok && apiErr.Code == "ASSERTED_WORKLOAD_BOUNDARY_NOT_FOUND" {
+			diags.AddError(
+				"Functional Boundary Not Found",
+				fmt.Sprintf("The Orion API could not find functional boundary %q for environment=%q %s: %s",
+					apiErr.BoundaryName, req.Environment, identitySummary(identity), apiErr.Message),
+			)
+			return
+		}
 		diags.AddError(
 			"Error Creating/Updating Agent",
 			fmt.Sprintf("Could not create/update agent environment=%q %s: %s", req.Environment, identitySummary(identity), err),

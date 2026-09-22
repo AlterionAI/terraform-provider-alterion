@@ -23,17 +23,26 @@ var Version = "dev"
 const defaultTimeout = 10 * time.Second
 
 // APIError is returned for any non-2xx response. The body is always
-// {"success": false, "error": "<message>"}, plus "existingAgentId" on a
-// 409 short-id collision.
+// {"success": false, "error": "<message>"}, plus "code" on typed errors,
+// "existingAgentId" on a 409 short-id collision, and "boundaryName" on a
+// 400 ASSERTED_WORKLOAD_BOUNDARY_NOT_FOUND.
 type APIError struct {
 	Status          int
+	Code            string
 	Message         string
 	ExistingAgentID string
+	BoundaryName    string
 }
 
 func (e *APIError) Error() string {
+	if e.Status == http.StatusUnauthorized {
+		return fmt.Sprintf("orion api error (status 401): %s; mint a new token (api_token/ALTERION_API_TOKEN may be invalid, expired, or revoked)", e.Message)
+	}
 	if e.ExistingAgentID != "" {
 		return fmt.Sprintf("orion api error (status %d): %s (existing agent id: %s)", e.Status, e.Message, e.ExistingAgentID)
+	}
+	if e.BoundaryName != "" {
+		return fmt.Sprintf("orion api error (status %d): %s (boundary: %s)", e.Status, e.Message, e.BoundaryName)
 	}
 	return fmt.Sprintf("orion api error (status %d): %s", e.Status, e.Message)
 }
@@ -182,7 +191,9 @@ func (c *Client) DeleteAgent(ctx context.Context, shortID string, adopt bool) (*
 type errorBody struct {
 	Success         bool   `json:"success"`
 	Error           string `json:"error"`
+	Code            string `json:"code"`
 	ExistingAgentID string `json:"existingAgentId"`
+	BoundaryName    string `json:"boundaryName"`
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body []byte, out interface{}) error {
@@ -216,8 +227,10 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte, out i
 		}
 		return &APIError{
 			Status:          resp.StatusCode,
+			Code:            eb.Code,
 			Message:         msg,
 			ExistingAgentID: eb.ExistingAgentID,
+			BoundaryName:    eb.BoundaryName,
 		}
 	}
 
