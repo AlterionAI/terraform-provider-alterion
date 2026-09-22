@@ -207,6 +207,35 @@ func TestCreateAgent_Success(t *testing.T) {
 	}
 }
 
+func TestCreateAgent_FunctionalBoundaries(t *testing.T) {
+	c, closeFn := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		var body CreateAgentRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode body: %v", err)
+		}
+		want := []string{"production-support", "finance"}
+		if len(body.FunctionalBoundaries) != len(want) || body.FunctionalBoundaries[0] != want[0] || body.FunctionalBoundaries[1] != want[1] {
+			t.Errorf("unexpected functionalBoundaries: %+v", body.FunctionalBoundaries)
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(CreateAgentResponse{Success: true, ShortID: "75a30ffb2baa", Created: true})
+	})
+	defer closeFn()
+
+	_, err := c.CreateAgent(context.Background(), CreateAgentRequest{
+		Environment:          "production",
+		CloudProvider:        "aws",
+		CloudAccountID:       "123456789012",
+		CloudRegion:          "us-east-1",
+		WorkloadName:         "support-bot",
+		DisplayName:          "Support Bot",
+		FunctionalBoundaries: []string{"production-support", "finance"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestCreateAgent_Conflict409(t *testing.T) {
 	c, closeFn := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusConflict)

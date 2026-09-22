@@ -3,14 +3,8 @@ package client
 import "testing"
 
 // TestExpectedShortID pins the local short-id derivation to golden vectors
-// taken from the Orion server implementation. If this test starts failing
-// after an upstream change, the server's derivation changed and this
-// helper (used only for a non-blocking diagnostic) needs to change with it.
-//
-// identityKey values are the server's internal "<cloudProvider>.
-// <cloudAccountId>.<cloudRegion>.<workloadName>" composition (see
-// IdentityKey) — never sent on the wire, only used to reproduce the hash
-// locally.
+// from the Orion server. A failure means the server's derivation changed
+// and this diagnostic-only helper needs to change with it.
 func TestExpectedShortID(t *testing.T) {
 	cases := []struct {
 		environment string
@@ -22,8 +16,7 @@ func TestExpectedShortID(t *testing.T) {
 		{"development", "gcp.my-gcp-project-1.us-central1.dev-agent", "06e296460bac"},
 		{"production", "azure.11111111-1111-1111-1111-111111111111.eastus.a", "41851e90b5dd"},
 		{"staging", "aws.123456789012.eu-west-2.agentcore-runtime-with-a-long-name-x", "1ecc6dc1d727"},
-		// Case-sensitive vector: uppercase + underscore workload_name must
-		// NOT be folded or lowercased — computed via IdentityKey below.
+		// Case-sensitive: workload_name is never folded or lowercased.
 		{"production", IdentityKey(WorkloadIdentity{CloudProvider: "aws", CloudAccountID: "123456789012", CloudRegion: "us-east-1", WorkloadName: "My_Agent"}), "3b021fd0cf74"},
 	}
 
@@ -37,9 +30,8 @@ func TestExpectedShortID(t *testing.T) {
 	}
 }
 
-// TestIdentityKey_CaseSensitive proves distinct workload names that differ
-// only by case yield distinct identity keys — no lowercasing or folding
-// anywhere in the composition.
+// TestIdentityKey_CaseSensitive proves names differing only by case yield
+// distinct identity keys.
 func TestIdentityKey_CaseSensitive(t *testing.T) {
 	upper := IdentityKey(WorkloadIdentity{CloudProvider: "aws", CloudAccountID: "123456789012", CloudRegion: "us-east-1", WorkloadName: "My_Agent"})
 	lower := IdentityKey(WorkloadIdentity{CloudProvider: "aws", CloudAccountID: "123456789012", CloudRegion: "us-east-1", WorkloadName: "my_agent"})

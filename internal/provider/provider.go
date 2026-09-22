@@ -12,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/AlterionAI/terraform-provider-alterion/internal/client"
@@ -29,16 +30,22 @@ type AlterionProvider struct {
 
 // alterionProviderModel maps the provider configuration block.
 type alterionProviderModel struct {
-	OrionURL   types.String `tfsdk:"orion_url"`
-	APIToken   types.String `tfsdk:"api_token"`
-	GatewayURL types.String `tfsdk:"gateway_url"`
+	OrionURL       types.String `tfsdk:"orion_url"`
+	APIToken       types.String `tfsdk:"api_token"`
+	GatewayURL     types.String `tfsdk:"gateway_url"`
+	CloudProvider  types.String `tfsdk:"cloud_provider"`
+	CloudAccountID types.String `tfsdk:"cloud_account_id"`
+	CloudRegion    types.String `tfsdk:"cloud_region"`
 }
 
 // AlterionProviderData is passed to resources/data sources via
 // resp.ResourceData / resp.DataSourceData.
 type AlterionProviderData struct {
-	Client     *client.Client
-	GatewayURL string // optional; empty when unset
+	Client         *client.Client
+	GatewayURL     string // optional; empty when unset
+	CloudProvider  string // defaults to "aws"; see defaultCloudProvider
+	CloudAccountID string // optional; empty when unset
+	CloudRegion    string // optional; empty when unset
 }
 
 func New(version string) func() provider.Provider {
@@ -63,11 +70,26 @@ func (p *AlterionProvider) Schema(_ context.Context, _ provider.SchemaRequest, r
 			"api_token": schema.StringAttribute{
 				Required:    true,
 				Sensitive:   true,
-				Description: "Orion API token (looks like orion_at_<hex>). May also be set via the ALTERION_API_TOKEN environment variable. Ownership of anything this token registers is tied to the Orion user who minted it, not to the token itself, so rotating the token does not change ownership and a re-apply keeps working after rotation. Tokens expire (90 days by default) and stop working if the minting user loses the approver role; a 401 from the API surfaces as \"token rejected; mint a new one\".",
+				Description: "Orion API token (looks like orion_at_<hex>). May also be set via the ALTERION_API_TOKEN environment variable. Ownership is tied to the Orion user who minted the token, not the token itself, so rotating it keeps ownership intact. Tokens expire (90 days by default); a rejected token surfaces as a 401.",
 			},
 			"gateway_url": schema.StringAttribute{
 				Optional:    true,
 				Description: "Optional base URL for the Alterion gateway. When set, the alterion_agent_path_key data source computes gateway_base_url as \"<gateway_url>/<path_prefix>/<short_id>\" if the server did not return one.",
+			},
+			"cloud_provider": schema.StringAttribute{
+				Optional:    true,
+				Description: "Default cloud_provider for the alterion_agent resource and alterion_agent_path_key data source when they omit it. One of aws, gcp, azure. Defaults to aws.",
+				Validators: []validator.String{
+					cloudProviderValidator{},
+				},
+			},
+			"cloud_account_id": schema.StringAttribute{
+				Optional:    true,
+				Description: "Default cloud_account_id for the resource and data source when they omit it.",
+			},
+			"cloud_region": schema.StringAttribute{
+				Optional:    true,
+				Description: "Default cloud_region for the resource and data source when they omit it.",
 			},
 		},
 	}
@@ -112,8 +134,11 @@ func (p *AlterionProvider) Configure(ctx context.Context, req provider.Configure
 	c := client.New(orionURL, apiToken)
 
 	data := &AlterionProviderData{
-		Client:     c,
-		GatewayURL: config.GatewayURL.ValueString(),
+		Client:         c,
+		GatewayURL:     config.GatewayURL.ValueString(),
+		CloudProvider:  defaultCloudProvider(config.CloudProvider),
+		CloudAccountID: config.CloudAccountID.ValueString(),
+		CloudRegion:    config.CloudRegion.ValueString(),
 	}
 
 	resp.DataSourceData = data

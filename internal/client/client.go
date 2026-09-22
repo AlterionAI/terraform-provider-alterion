@@ -16,16 +16,15 @@ import (
 	"time"
 )
 
-// Version is the provider version reported in the User-Agent header. It is
-// overwritten by main.go via -ldflags at release build time; the zero value
-// is fine for local/dev/test builds.
+// Version is the provider version reported in the User-Agent header. Set by
+// main.go via -ldflags at release build time; "dev" otherwise.
 var Version = "dev"
 
 const defaultTimeout = 10 * time.Second
 
-// APIError is returned for any non-2xx response from the Orion API. The
-// response body is always {"success": false, "error": "<message>"} plus,
-// on a 409 short-id collision, an "existingAgentId" field.
+// APIError is returned for any non-2xx response. The body is always
+// {"success": false, "error": "<message>"}, plus "existingAgentId" on a
+// 409 short-id collision.
 type APIError struct {
 	Status          int
 	Message         string
@@ -47,7 +46,7 @@ type Client struct {
 }
 
 // New constructs a Client. baseURL is the Orion web app's base URL (e.g.
-// https://orion.example.com), with no trailing path segment required.
+// https://orion.example.com); no trailing path segment required.
 func New(baseURL, token string) *Client {
 	return &Client{
 		baseURL:    strings.TrimRight(baseURL, "/"),
@@ -65,11 +64,9 @@ type PathKeyResponse struct {
 	GatewayBaseURL string `json:"gatewayBaseUrl"`
 }
 
-// WorkloadIdentity is the cloud-agnostic identity of a workload within an
-// Orion environment: which cloud, which account/project/subscription,
-// which region, and the workload's own name. It is sent to the API as
-// structured fields (never joined into a single string) on both
-// GetPathKey and CreateAgent.
+// WorkloadIdentity is a workload's cloud-agnostic identity: which cloud,
+// which account/project/subscription, which region, and its own name. Sent
+// to the API as structured fields, never joined into a single string.
 type WorkloadIdentity struct {
 	CloudProvider  string
 	CloudAccountID string
@@ -105,9 +102,9 @@ type AgentResponse struct {
 	RegisteredBy string `json:"registeredBy"`
 }
 
-// GetAgent calls GET /api/v1/agents/asserted/{shortId}. A 404 (agent
-// missing or archived) is returned as an *APIError, not swallowed here, so
-// the resource layer can decide how to react (e.g. remove from state).
+// GetAgent calls GET /api/v1/agents/asserted/{shortId}. A 404 is returned
+// as an *APIError so the caller can decide how to react (e.g. remove from
+// state), not swallowed here.
 func (c *Client) GetAgent(ctx context.Context, shortID string) (*AgentResponse, error) {
 	path := "/api/v1/agents/asserted/" + url.PathEscape(shortID)
 
@@ -122,16 +119,16 @@ func (c *Client) GetAgent(ctx context.Context, shortID string) (*AgentResponse, 
 // workload identity is sent as structured fields, never joined into a
 // single string.
 type CreateAgentRequest struct {
-	Environment          string `json:"environment"`
-	CloudProvider        string `json:"cloudProvider"`
-	CloudAccountID       string `json:"cloudAccountId"`
-	CloudRegion          string `json:"cloudRegion"`
-	WorkloadName         string `json:"workloadName"`
-	WorkloadResourceID   string `json:"workloadResourceId,omitempty"`
-	WorkloadType         string `json:"workloadType,omitempty"`
-	DisplayName          string `json:"displayName"`
-	AutoRegisterBoundary string `json:"autoRegisterBoundaryName,omitempty"`
-	Adopt                bool   `json:"adopt,omitempty"`
+	Environment          string   `json:"environment"`
+	CloudProvider        string   `json:"cloudProvider"`
+	CloudAccountID       string   `json:"cloudAccountId"`
+	CloudRegion          string   `json:"cloudRegion"`
+	WorkloadName         string   `json:"workloadName"`
+	WorkloadResourceID   string   `json:"workloadResourceId,omitempty"`
+	WorkloadType         string   `json:"workloadType,omitempty"`
+	DisplayName          string   `json:"displayName"`
+	FunctionalBoundaries []string `json:"functionalBoundaries,omitempty"`
+	Adopt                bool     `json:"adopt,omitempty"`
 }
 
 // CreateAgentResponse is the body of a successful POST response.
@@ -144,9 +141,9 @@ type CreateAgentResponse struct {
 	Created      bool   `json:"created"`
 }
 
-// CreateAgent calls POST /api/v1/agents/asserted. It is also used for
-// updates: the server upserts on (environment, cloud_provider,
-// cloud_account_id, cloud_region, workload_name).
+// CreateAgent calls POST /api/v1/agents/asserted. Also used for updates:
+// the server upserts on (environment, cloud_provider, cloud_account_id,
+// cloud_region, workload_name).
 func (c *Client) CreateAgent(ctx context.Context, req CreateAgentRequest) (*CreateAgentResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -166,9 +163,8 @@ type DeleteAgentResponse struct {
 	ArchivedAgentIDs []string `json:"archivedAgentIds"`
 }
 
-// DeleteAgent calls DELETE /api/v1/agents/asserted/{shortId}. A 404 is
-// treated as success (already deleted) by the caller, not swallowed here,
-// so the resource layer can log/react accordingly.
+// DeleteAgent calls DELETE /api/v1/agents/asserted/{shortId}. A 404 is not
+// treated as success here — the resource layer decides that.
 func (c *Client) DeleteAgent(ctx context.Context, shortID string, adopt bool) (*DeleteAgentResponse, error) {
 	path := "/api/v1/agents/asserted/" + url.PathEscape(shortID)
 	if adopt {
@@ -182,7 +178,7 @@ func (c *Client) DeleteAgent(ctx context.Context, shortID string, adopt bool) (*
 	return &out, nil
 }
 
-// errorBody mirrors the shape of every error response from the API.
+// errorBody mirrors every error response from the API.
 type errorBody struct {
 	Success         bool   `json:"success"`
 	Error           string `json:"error"`
@@ -244,23 +240,20 @@ func bytesReader(b []byte) io.Reader {
 	return bytes.NewReader(b)
 }
 
-// ExpectedShortID reproduces the server's short-id derivation locally: the
-// first 12 hex characters of sha256("asserted|<environment>|<identityKey>"),
-// where identityKey is IdentityKey's output. It exists ONLY for tests and
-// for a diagnostic warning in the data source (the server's response is
-// always authoritative for the real value).
+// ExpectedShortID reproduces the server's short-id derivation: the first 12
+// hex characters of sha256("asserted|<environment>|<identityKey>"). Used
+// only for tests and a diagnostic warning — the server's response is
+// always authoritative.
 func ExpectedShortID(environment, identityKey string) string {
 	sum := sha256.Sum256([]byte("asserted|" + environment + "|" + identityKey))
 	return hex.EncodeToString(sum[:])[:12]
 }
 
-// IdentityKey reproduces, for the local ExpectedShortID diagnostic ONLY,
-// the server's internal composition of a workload's identity into the
-// single string it hashes to derive the short id:
+// IdentityKey reproduces, for ExpectedShortID only, the server's
+// composition of a workload's identity into the string it hashes:
 // "<cloudProvider>.<cloudAccountId>.<cloudRegion>.<workloadName>". This
-// join never appears on the wire — GetPathKey and CreateAgent always send
-// the four fields structured — and workloadName is used verbatim and
-// case-sensitive, no lowercasing or folding.
+// join never appears on the wire; workloadName is used verbatim and
+// case-sensitive.
 func IdentityKey(identity WorkloadIdentity) string {
 	return fmt.Sprintf("%s.%s.%s.%s", identity.CloudProvider, identity.CloudAccountID, identity.CloudRegion, identity.WorkloadName)
 }

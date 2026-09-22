@@ -22,28 +22,24 @@ var (
 
 var validEnvironments = []string{"production", "staging", "development"}
 
-// validCloudProviders enumerates the clouds this provider's cloud_provider
-// attribute accepts.
+// validCloudProviders enumerates the clouds cloud_provider accepts.
 var validCloudProviders = []string{"aws", "gcp", "azure"}
 
-// cloudAccountIDPatterns validates cloud_account_id per cloud_provider:
-// AWS account ids are 12 digits, GCP project ids follow GCP's own naming
-// rule, and Azure subscription ids are GUIDs.
+// cloudAccountIDPatterns validates cloud_account_id's shape per
+// cloud_provider: 12-digit AWS account id, GCP project id, Azure GUID.
 var cloudAccountIDPatterns = map[string]*regexp.Regexp{
 	"aws":   regexp.MustCompile(`^\d{12}$`),
 	"gcp":   regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`),
 	"azure": regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`),
 }
 
-// cloudRegionPattern is deliberately loose and cloud-agnostic: lowercase
-// alphanumerics and hyphens, matching AWS/GCP/Azure region name shapes
-// alike (e.g. us-east-1, us-central1, eastus).
+// cloudRegionPattern is cloud-agnostic: lowercase alphanumerics and
+// hyphens (e.g. us-east-1, us-central1, eastus).
 var cloudRegionPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
 
-// workloadNamePattern is the cloud-agnostic workload name shape: starts
-// with an alphanumeric, then alphanumerics/underscores/hyphens, up to 64
-// characters. Case-sensitive; no lowercasing or folding is applied here or
-// anywhere downstream — distinct names must stay distinct.
+// workloadNamePattern is cloud-agnostic: starts with an alphanumeric,
+// then alphanumerics/underscores/hyphens, up to 64 characters.
+// Case-sensitive — no lowercasing or folding.
 var workloadNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 
 func NewAgentPathKeyDataSource() datasource.DataSource {
@@ -53,6 +49,7 @@ func NewAgentPathKeyDataSource() datasource.DataSource {
 type agentPathKeyDataSource struct {
 	client     *client.Client
 	gatewayURL string
+	defaults   providerDefaults
 }
 
 type agentPathKeyDataSourceModel struct {
@@ -96,15 +93,17 @@ func (d *agentPathKeyDataSource) Schema(_ context.Context, _ datasource.SchemaRe
 				},
 			},
 			"cloud_account_id": schema.StringAttribute{
-				Required:    true,
-				Description: "Cloud account/project/subscription id the workload is (or will be) deployed in: a 12-digit AWS account id, a GCP project id, or an Azure subscription GUID, matching cloud_provider.",
+				Optional:    true,
+				Computed:    true,
+				Description: "Cloud account/project/subscription id the workload is (or will be) deployed in: a 12-digit AWS account id, a GCP project id, or an Azure subscription GUID, matching cloud_provider. Falls back to the provider's cloud_account_id when omitted; one of the two must be set.",
 				Validators: []validator.String{
 					cloudAccountIDValidator{},
 				},
 			},
 			"cloud_region": schema.StringAttribute{
-				Required:    true,
-				Description: "Cloud region the workload is (or will be) deployed in, e.g. us-east-1.",
+				Optional:    true,
+				Computed:    true,
+				Description: "Cloud region the workload is (or will be) deployed in, e.g. us-east-1. Falls back to the provider's cloud_region when omitted; one of the two must be set.",
 				Validators: []validator.String{
 					cloudRegionValidator{},
 				},
@@ -152,6 +151,11 @@ func (d *agentPathKeyDataSource) Configure(_ context.Context, req datasource.Con
 
 	d.client = data.Client
 	d.gatewayURL = data.GatewayURL
+	d.defaults = providerDefaults{
+		CloudProvider:  data.CloudProvider,
+		CloudAccountID: data.CloudAccountID,
+		CloudRegion:    data.CloudRegion,
+	}
 }
 
 func (d *agentPathKeyDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
@@ -162,12 +166,10 @@ func (d *agentPathKeyDataSource) Read(ctx context.Context, req datasource.ReadRe
 	}
 
 	environment := model.Environment.ValueString()
-	cloudProvider := defaultCloudProvider(model.CloudProvider)
-	identity := client.WorkloadIdentity{
-		CloudProvider:  cloudProvider,
-		CloudAccountID: model.CloudAccountID.ValueString(),
-		CloudRegion:    model.CloudRegion.ValueString(),
-		WorkloadName:   model.WorkloadName.ValueString(),
+	identity, diags := resolveIdentity(model.CloudProvider, model.CloudAccountID, model.CloudRegion, model.WorkloadName, d.defaults)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
 	}
 
 	result, err := d.client.GetPathKey(ctx, environment, identity)
@@ -200,7 +202,9 @@ func (d *agentPathKeyDataSource) Read(ctx context.Context, req datasource.ReadRe
 		gatewayBaseURL = strings.TrimRight(d.gatewayURL, "/") + "/" + result.PathPrefix + "/" + result.ShortID
 	}
 
-	model.CloudProvider = types.StringValue(cloudProvider)
+	model.CloudProvider = types.StringValue(identity.CloudProvider)
+	model.CloudAccountID = types.StringValue(identity.CloudAccountID)
+	model.CloudRegion = types.StringValue(identity.CloudRegion)
 	model.ID = types.StringValue(result.AgentID)
 	model.AgentID = types.StringValue(result.AgentID)
 	model.ShortID = types.StringValue(result.ShortID)
@@ -210,9 +214,7 @@ func (d *agentPathKeyDataSource) Read(ctx context.Context, req datasource.ReadRe
 	resp.Diagnostics.Append(resp.State.Set(ctx, &model)...)
 }
 
-// defaultCloudProvider returns "aws" when cloud_provider was left unset in
-// configuration, matching this attribute's documented default (data source
-// schemas have no built-in Default, so this is applied at Read time).
+// defaultCloudProvider returns "aws" when v is unset.
 func defaultCloudProvider(v types.String) string {
 	if v.IsNull() || v.IsUnknown() || v.ValueString() == "" {
 		return "aws"
@@ -225,9 +227,7 @@ func identitySummary(identity client.WorkloadIdentity) string {
 		identity.CloudProvider, identity.CloudAccountID, identity.CloudRegion, identity.WorkloadName)
 }
 
-// environmentValidator enforces the environment enum client-side, so
-// `terraform plan` fails fast instead of round-tripping to the API for an
-// obviously invalid value.
+// environmentValidator enforces the environment enum client-side.
 type environmentValidator struct{}
 
 func (v environmentValidator) Description(_ context.Context) string {
@@ -283,9 +283,8 @@ func (v cloudProviderValidator) ValidateString(ctx context.Context, req validato
 	)
 }
 
-// cloudAccountIDValidator enforces cloud_account_id's format against
-// whichever cloud_provider is configured alongside it (defaulting to aws
-// when cloud_provider itself is unset, matching that attribute's default).
+// cloudAccountIDValidator enforces cloud_account_id's format against the
+// cloud_provider configured alongside it (defaults to aws).
 type cloudAccountIDValidator struct{}
 
 func (v cloudAccountIDValidator) Description(_ context.Context) string {
@@ -314,8 +313,7 @@ func (v cloudAccountIDValidator) ValidateString(ctx context.Context, req validat
 
 	pattern, ok := cloudAccountIDPatterns[cloudProvider]
 	if !ok {
-		// cloud_provider itself is invalid; that's cloudProviderValidator's
-		// job to report, not this validator's.
+		// cloudProviderValidator reports an invalid cloud_provider.
 		return
 	}
 	if !pattern.MatchString(value) {

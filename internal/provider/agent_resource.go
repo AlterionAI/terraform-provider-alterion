@@ -10,7 +10,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -29,7 +28,8 @@ func NewAgentResource() resource.Resource {
 }
 
 type agentResource struct {
-	client *client.Client
+	client   *client.Client
+	defaults providerDefaults
 }
 
 type agentResourceModel struct {
@@ -42,7 +42,7 @@ type agentResourceModel struct {
 	WorkloadResourceID   types.String `tfsdk:"workload_resource_id"`
 	WorkloadType         types.String `tfsdk:"workload_type"`
 	DisplayName          types.String `tfsdk:"display_name"`
-	AutoRegisterBoundary types.String `tfsdk:"auto_register_boundary"`
+	FunctionalBoundaries types.List   `tfsdk:"functional_boundaries"`
 	Adopt                types.Bool   `tfsdk:"adopt"`
 	AgentID              types.String `tfsdk:"agent_id"`
 	ShortID              types.String `tfsdk:"short_id"`
@@ -78,8 +78,7 @@ func (r *agentResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 			"cloud_provider": schema.StringAttribute{
 				Optional:    true,
 				Computed:    true,
-				Default:     stringdefault.StaticString("aws"),
-				Description: "One of aws, gcp, azure. Defaults to aws. Changing this forces a new resource.",
+				Description: "One of aws, gcp, azure. Falls back to the provider's cloud_provider, which defaults to aws. Changing this forces a new resource.",
 				Validators: []validator.String{
 					cloudProviderValidator{},
 				},
@@ -88,8 +87,9 @@ func (r *agentResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 				},
 			},
 			"cloud_account_id": schema.StringAttribute{
-				Required:    true,
-				Description: "Cloud account/project/subscription id the workload is deployed in: a 12-digit AWS account id, a GCP project id, or an Azure subscription GUID, matching cloud_provider. Changing this forces a new resource.",
+				Optional:    true,
+				Computed:    true,
+				Description: "Cloud account/project/subscription id the workload is deployed in: a 12-digit AWS account id, a GCP project id, or an Azure subscription GUID, matching cloud_provider. Falls back to the provider's cloud_account_id when omitted; one of the two must be set. Changing this forces a new resource.",
 				Validators: []validator.String{
 					cloudAccountIDValidator{},
 				},
@@ -98,8 +98,9 @@ func (r *agentResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 				},
 			},
 			"cloud_region": schema.StringAttribute{
-				Required:    true,
-				Description: "Cloud region the workload is deployed in, e.g. us-east-1. Changing this forces a new resource.",
+				Optional:    true,
+				Computed:    true,
+				Description: "Cloud region the workload is deployed in, e.g. us-east-1. Falls back to the provider's cloud_region when omitted; one of the two must be set. Changing this forces a new resource.",
 				Validators: []validator.String{
 					cloudRegionValidator{},
 				},
@@ -109,7 +110,7 @@ func (r *agentResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 			},
 			"workload_name": schema.StringAttribute{
 				Required:    true,
-				Description: "Name of the workload (e.g. an AWS Bedrock AgentCore agent_runtime_name, a GCP Cloud Run service name, an ECS service name). Case-sensitive; must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$. Changing this forces a new resource.",
+				Description: "Name of the workload (e.g. an AWS Bedrock AgentCore agent_runtime_name, a GCP Cloud Run service name, an ECS service name). Case-sensitive; must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$. Required: the identity must exist before the runtime does. Changing this forces a new resource.",
 				Validators: []validator.String{
 					workloadNameValidator{},
 				},
@@ -136,9 +137,10 @@ func (r *agentResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 					defaultToWorkloadNameModifier{},
 				},
 			},
-			"auto_register_boundary": schema.StringAttribute{
+			"functional_boundaries": schema.ListAttribute{
 				Optional:    true,
-				Description: "Name of the Orion contextual boundary this agent is approved into on registration. When omitted, the agent lands in Shadow and is only captured, not enforced.",
+				ElementType: types.StringType,
+				Description: "Functional Orion boundaries the agent also joins. The environment boundary is derived from environment and never listed here.",
 			},
 			"adopt": schema.BoolAttribute{
 				Optional:    true,
@@ -187,19 +189,31 @@ func (r *agentResource) Configure(_ context.Context, req resource.ConfigureReque
 	}
 
 	r.client = data.Client
-}
-
-func (r *agentResource) identity(model *agentResourceModel) client.WorkloadIdentity {
-	return client.WorkloadIdentity{
-		CloudProvider:  defaultCloudProvider(model.CloudProvider),
-		CloudAccountID: model.CloudAccountID.ValueString(),
-		CloudRegion:    model.CloudRegion.ValueString(),
-		WorkloadName:   model.WorkloadName.ValueString(),
+	r.defaults = providerDefaults{
+		CloudProvider:  data.CloudProvider,
+		CloudAccountID: data.CloudAccountID,
+		CloudRegion:    data.CloudRegion,
 	}
 }
 
+func (r *agentResource) identity(model *agentResourceModel, diags *diag.Diagnostics) client.WorkloadIdentity {
+	identity, idDiags := resolveIdentity(model.CloudProvider, model.CloudAccountID, model.CloudRegion, model.WorkloadName, r.defaults)
+	diags.Append(idDiags...)
+	return identity
+}
+
 func (r *agentResource) createOrUpdate(ctx context.Context, model *agentResourceModel, diags *diag.Diagnostics) {
-	identity := r.identity(model)
+	identity := r.identity(model, diags)
+	if diags.HasError() {
+		return
+	}
+
+	var functionalBoundaries []string
+	diags.Append(model.FunctionalBoundaries.ElementsAs(ctx, &functionalBoundaries, true)...)
+	if diags.HasError() {
+		return
+	}
+
 	req := client.CreateAgentRequest{
 		Environment:          model.Environment.ValueString(),
 		CloudProvider:        identity.CloudProvider,
@@ -209,7 +223,7 @@ func (r *agentResource) createOrUpdate(ctx context.Context, model *agentResource
 		WorkloadResourceID:   model.WorkloadResourceID.ValueString(),
 		WorkloadType:         model.WorkloadType.ValueString(),
 		DisplayName:          model.DisplayName.ValueString(),
-		AutoRegisterBoundary: model.AutoRegisterBoundary.ValueString(),
+		FunctionalBoundaries: functionalBoundaries,
 		Adopt:                model.Adopt.ValueBool(),
 	}
 
@@ -231,6 +245,8 @@ func (r *agentResource) createOrUpdate(ctx context.Context, model *agentResource
 	}
 
 	model.CloudProvider = types.StringValue(identity.CloudProvider)
+	model.CloudAccountID = types.StringValue(identity.CloudAccountID)
+	model.CloudRegion = types.StringValue(identity.CloudRegion)
 	model.AgentID = types.StringValue(result.AgentID)
 	model.ShortID = types.StringValue(result.ShortID)
 	model.Status = types.StringValue(result.Status)
@@ -255,12 +271,9 @@ func (r *agentResource) Create(ctx context.Context, req resource.CreateRequest, 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &model)...)
 }
 
-// Read refreshes state via GET /api/v1/agents/asserted/{shortId}.
-// environment and the identity attributes (cloud_provider, cloud_account_id,
-// cloud_region, workload_name) are kept from state (the server doesn't echo
-// them back on this route). short_id also normally comes from state; if
-// state somehow has no short_id yet (e.g. an older state predating this
-// field), it is derived once via the path-key lookup before the GET.
+// Read refreshes state via GET /api/v1/agents/asserted/{shortId}. Identity
+// attributes are kept from state (the server doesn't echo them back). If
+// state has no short_id yet, it's derived via the path-key lookup first.
 func (r *agentResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var model agentResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &model)...)
@@ -269,7 +282,10 @@ func (r *agentResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	}
 
 	environment := model.Environment.ValueString()
-	identity := r.identity(&model)
+	identity := r.identity(&model, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	shortID := model.ShortID.ValueString()
 
 	if shortID == "" {
@@ -291,7 +307,6 @@ func (r *agentResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	result, err := r.client.GetAgent(ctx, shortID)
 	if err != nil {
 		if apiErr, ok := err.(*client.APIError); ok && apiErr.Status == 404 {
-			// Agent missing or archived; remove from state.
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -340,7 +355,6 @@ func (r *agentResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 	_, err := r.client.DeleteAgent(ctx, shortID, model.Adopt.ValueBool())
 	if err != nil {
 		if apiErr, ok := err.(*client.APIError); ok && apiErr.Status == 404 {
-			// Already gone; treat as success.
 			return
 		}
 		resp.Diagnostics.AddError(
@@ -351,11 +365,8 @@ func (r *agentResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 	}
 }
 
-// ImportState is out of scope: import-by-short-id would need a GET-by-
-// short-id route to reconstruct environment/cloud_provider/
-// cloud_account_id/cloud_region/workload_name/display_name, which the API
-// does not currently expose. Document this in the README rather than
-// implementing a lossy import.
+// ImportState is unsupported: the API has no GET-by-short-id route to
+// reconstruct the resource's other attributes from a short id alone.
 func (r *agentResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resp.Diagnostics.AddError(
 		"Import Not Supported",
@@ -363,10 +374,8 @@ func (r *agentResource) ImportState(ctx context.Context, req resource.ImportStat
 	)
 }
 
-// workloadResourceIDValidator enforces that, if set, workload_resource_id
-// is non-empty and at most 2048 characters. It carries no cloud-specific
-// shape validation (AWS ARN vs. GCP full resource name vs. Azure resource
-// id) — the server is the source of truth for that.
+// workloadResourceIDValidator enforces non-empty, at most 2048 characters,
+// with no cloud-specific shape validation — the server owns that.
 type workloadResourceIDValidator struct{}
 
 func (v workloadResourceIDValidator) Description(_ context.Context) string {
@@ -391,11 +400,9 @@ func (v workloadResourceIDValidator) ValidateString(ctx context.Context, req val
 	}
 }
 
-// defaultToWorkloadNameModifier defaults display_name to the configured
-// workload_name when display_name is omitted from configuration.
-// Terraform's declarative "default" helpers only support static/
-// computed-from-nothing values, not a default derived from a sibling
-// attribute, so this is implemented as a plan modifier instead.
+// defaultToWorkloadNameModifier defaults display_name to workload_name
+// when display_name is omitted (a sibling-derived default needs a plan
+// modifier; schema Default only supports static values).
 type defaultToWorkloadNameModifier struct{}
 
 func (m defaultToWorkloadNameModifier) Description(_ context.Context) string {
@@ -407,9 +414,6 @@ func (m defaultToWorkloadNameModifier) MarkdownDescription(ctx context.Context) 
 }
 
 func (m defaultToWorkloadNameModifier) PlanModifyString(ctx context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
-	// Only fill in a default when display_name is genuinely absent from
-	// configuration; an explicit value (including one already in state)
-	// is left alone.
 	if !req.ConfigValue.IsNull() {
 		return
 	}

@@ -16,32 +16,29 @@ import (
 	"github.com/AlterionAI/terraform-provider-alterion/internal/client"
 )
 
-// testAccProtoV6ProviderFactories are used to instantiate the provider
-// during acceptance testing. These tests never talk to a real Orion
-// deployment: they point orion_url at an in-process httptest server that
-// fakes the REST contract, so no network access outside localhost occurs
-// and no ALTERION_ORION_URL/ALTERION_API_TOKEN env vars are required.
+// testAccProtoV6ProviderFactories instantiates the provider for
+// acceptance tests, which point orion_url at an in-process httptest
+// server — no real Orion deployment, no env vars required.
 func testAccProtoV6ProviderFactories() map[string]func() (tfprotov6.ProviderServer, error) {
 	return map[string]func() (tfprotov6.ProviderServer, error){
 		"alterion": providerserver.NewProtocol6WithError(New("test")()),
 	}
 }
 
-// fakeAgentRecord is what the fake Orion server remembers about a
-// registered agent, keyed by short id.
+// fakeAgentRecord is what the fake Orion server remembers, keyed by
+// short id.
 type fakeAgentRecord struct {
-	agentID      string
-	displayName  string
-	status       string
-	isRegistered bool
+	agentID              string
+	displayName          string
+	status               string
+	isRegistered         bool
+	functionalBoundaries []string
 }
 
-// fakeOrionServer stands in for the Orion web app's asserted-agent routes
-// for acceptance-style tests, using the real server-side short-id
-// derivation so responses are self-consistent. It keeps a small in-memory
-// store so GET-by-short-id can 404 once an agent has been "archived" —
-// including on demand via forget, for tests that simulate an agent going
-// missing out from under Terraform.
+// fakeOrionServer stands in for the Orion web app's asserted-agent
+// routes, using the real short-id derivation so responses are
+// self-consistent, with an in-memory store so GET-by-short-id can 404
+// once an agent is "archived" (including on demand via forget).
 type fakeOrionServer struct {
 	*httptest.Server
 
@@ -49,16 +46,15 @@ type fakeOrionServer struct {
 	records map[string]*fakeAgentRecord
 }
 
-// forget removes an agent from the fake server's store, so a subsequent
-// GET-by-short-id 404s as if the agent were deleted or archived directly
-// against Orion, outside of Terraform.
+// forget makes a subsequent GET-by-short-id 404, simulating an agent
+// deleted outside of Terraform.
 func (f *fakeOrionServer) forget(shortID string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.records, shortID)
 }
 
-// newFakeOrionServer starts a fakeOrionServer. Callers must defer
+// newFakeOrionServer starts a fakeOrionServer; callers must defer
 // server.Close().
 func newFakeOrionServer(t *testing.T) *fakeOrionServer {
 	t.Helper()
@@ -101,16 +97,18 @@ func newFakeOrionServer(t *testing.T) *fakeOrionServer {
 			WorkloadName:   stringField(body, "workloadName"),
 		}
 		displayName := stringField(body, "displayName")
+		functionalBoundaries := stringSliceField(body, "functionalBoundaries")
 		identityKey := client.IdentityKey(identity)
 		shortID := client.ExpectedShortID(environment, identityKey)
 		agentID := "asserted|" + environment + "|" + identityKey
 
 		fake.mu.Lock()
 		fake.records[shortID] = &fakeAgentRecord{
-			agentID:      agentID,
-			displayName:  displayName,
-			status:       "active",
-			isRegistered: true,
+			agentID:              agentID,
+			displayName:          displayName,
+			status:               "active",
+			isRegistered:         true,
+			functionalBoundaries: functionalBoundaries,
 		}
 		fake.mu.Unlock()
 
@@ -173,6 +171,17 @@ func stringField(body map[string]interface{}, key string) string {
 	return v
 }
 
+func stringSliceField(body map[string]interface{}, key string) []string {
+	raw, _ := body[key].([]interface{})
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if s, ok := v.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func TestAccAgentPathKeyDataSource_Basic(t *testing.T) {
 	server := newFakeOrionServer(t)
 	defer server.Close()
@@ -205,7 +214,7 @@ data "alterion_agent_path_key" "this" {
 	})
 }
 
-// TestAccAgentPathKeyDataSource_CloudProviderDefaultsToAWS verifies that
+// TestAccAgentPathKeyDataSource_CloudProviderDefaultsToAWS verifies
 // omitting cloud_provider defaults it to "aws".
 func TestAccAgentPathKeyDataSource_CloudProviderDefaultsToAWS(t *testing.T) {
 	server := newFakeOrionServer(t)
@@ -232,10 +241,8 @@ data "alterion_agent_path_key" "this" {
 	})
 }
 
-// TestAccAgentPathKeyDataSource_CaseSensitive proves two workload_name
-// values differing only by case ("My_Agent" vs "my_agent") produce distinct
-// agent ids and short ids — no lowercasing or hyphen-folding anywhere in
-// the composed identity key.
+// TestAccAgentPathKeyDataSource_CaseSensitive proves workload_name
+// values differing only by case produce distinct agent/short ids.
 func TestAccAgentPathKeyDataSource_CaseSensitive(t *testing.T) {
 	server := newFakeOrionServer(t)
 	defer server.Close()
@@ -419,7 +426,6 @@ resource "alterion_agent" "this" {
 				),
 			},
 			{
-				// Update display_name in place (identity attributes unchanged).
 				Config: providerConfig(server.URL) + `
 resource "alterion_agent" "this" {
   environment      = "staging"
@@ -439,7 +445,7 @@ resource "alterion_agent" "this" {
 	})
 }
 
-// TestAccAgentResource_DisplayNameDefaultsToWorkloadName verifies that
+// TestAccAgentResource_DisplayNameDefaultsToWorkloadName verifies
 // omitting display_name defaults it to workload_name.
 func TestAccAgentResource_DisplayNameDefaultsToWorkloadName(t *testing.T) {
 	server := newFakeOrionServer(t)
@@ -468,8 +474,7 @@ resource "alterion_agent" "this" {
 }
 
 // TestAccAgentResource_WithWorkloadResourceIDAndType covers the optional
-// workload_resource_id / workload_type attributes end to end, proving the
-// surface is cloud-agnostic (a non-AWS-specific resource id shape here).
+// workload_resource_id / workload_type attributes with a non-AWS shape.
 func TestAccAgentResource_WithWorkloadResourceIDAndType(t *testing.T) {
 	server := newFakeOrionServer(t)
 	defer server.Close()
@@ -501,10 +506,8 @@ resource "alterion_agent" "this" {
 }
 
 // TestAccAgentResource_RecreateOnMissing verifies that when the fake
-// server reports the agent as gone (GET-by-short-id 404s, e.g. because it
-// was archived directly against Orion outside of Terraform), the resource
-// is dropped from state on refresh and the next plan shows it needs to be
-// recreated, rather than silently going stale.
+// server 404s the agent, refresh drops it from state and the next plan
+// shows it needs recreating.
 func TestAccAgentResource_RecreateOnMissing(t *testing.T) {
 	server := newFakeOrionServer(t)
 	defer server.Close()
@@ -546,4 +549,122 @@ provider "alterion" {
   api_token  = "orion_at_testtoken"
 }
 `
+}
+
+func providerConfigWithCloudDefaults(baseURL, cloudProvider, cloudAccountID, cloudRegion string) string {
+	return `
+provider "alterion" {
+  orion_url        = "` + baseURL + `"
+  api_token        = "orion_at_testtoken"
+  cloud_provider   = "` + cloudProvider + `"
+  cloud_account_id = "` + cloudAccountID + `"
+  cloud_region     = "` + cloudRegion + `"
+}
+`
+}
+
+// TestAccAgentPathKeyDataSource_ProviderCloudDefaults verifies omitting
+// cloud_provider/cloud_account_id/cloud_region falls back to the
+// provider block.
+func TestAccAgentPathKeyDataSource_ProviderCloudDefaults(t *testing.T) {
+	server := newFakeOrionServer(t)
+	defer server.Close()
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories(),
+		Steps: []resource.TestStep{
+			{
+				Config: providerConfigWithCloudDefaults(server.URL, "gcp", "my-gcp-project-1", "us-central1") + `
+data "alterion_agent_path_key" "this" {
+  environment   = "staging"
+  workload_name = "ClaimsReview"
+}
+`,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("data.alterion_agent_path_key.this", "cloud_provider", "gcp"),
+					resource.TestCheckResourceAttr("data.alterion_agent_path_key.this", "cloud_account_id", "my-gcp-project-1"),
+					resource.TestCheckResourceAttr("data.alterion_agent_path_key.this", "cloud_region", "us-central1"),
+				),
+			},
+		},
+	})
+}
+
+// TestAccAgentPathKeyDataSource_MissingCloudAccountID verifies omitting
+// cloud_account_id at both levels errors.
+func TestAccAgentPathKeyDataSource_MissingCloudAccountID(t *testing.T) {
+	server := newFakeOrionServer(t)
+	defer server.Close()
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories(),
+		Steps: []resource.TestStep{
+			{
+				Config: providerConfig(server.URL) + `
+data "alterion_agent_path_key" "this" {
+  environment  = "staging"
+  cloud_region = "us-east-1"
+  workload_name = "ClaimsReview"
+}
+`,
+				ExpectError: regexp.MustCompile(`Missing Cloud Account Id`),
+			},
+		},
+	})
+}
+
+// TestAccAgentResource_ProviderCloudDefaults verifies the resource also
+// falls back to the provider's cloud defaults.
+func TestAccAgentResource_ProviderCloudDefaults(t *testing.T) {
+	server := newFakeOrionServer(t)
+	defer server.Close()
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories(),
+		Steps: []resource.TestStep{
+			{
+				Config: providerConfigWithCloudDefaults(server.URL, "aws", "123456789012", "us-east-1") + `
+resource "alterion_agent" "this" {
+  environment   = "staging"
+  workload_name = "ClaimsReview"
+}
+`,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("alterion_agent.this", "cloud_provider", "aws"),
+					resource.TestCheckResourceAttr("alterion_agent.this", "cloud_account_id", "123456789012"),
+					resource.TestCheckResourceAttr("alterion_agent.this", "cloud_region", "us-east-1"),
+				),
+			},
+		},
+	})
+}
+
+// TestAccAgentResource_FunctionalBoundaries verifies the attribute
+// round-trips through plan/apply.
+func TestAccAgentResource_FunctionalBoundaries(t *testing.T) {
+	server := newFakeOrionServer(t)
+	defer server.Close()
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories(),
+		Steps: []resource.TestStep{
+			{
+				Config: providerConfig(server.URL) + `
+resource "alterion_agent" "this" {
+  environment      = "staging"
+  cloud_provider   = "aws"
+  cloud_account_id = "123456789012"
+  cloud_region     = "us-east-1"
+  workload_name    = "ClaimsReview"
+  functional_boundaries = ["production-support", "finance"]
+}
+`,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("alterion_agent.this", "functional_boundaries.#", "2"),
+					resource.TestCheckResourceAttr("alterion_agent.this", "functional_boundaries.0", "production-support"),
+					resource.TestCheckResourceAttr("alterion_agent.this", "functional_boundaries.1", "finance"),
+				),
+			},
+		},
+	})
 }
