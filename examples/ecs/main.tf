@@ -77,13 +77,13 @@ resource "aws_ecs_service" "this" {
 # "aws" and a different workload_type — no AgentCore-specific attributes
 # anywhere on this resource.
 resource "alterion_agent" "this" {
-  environment             = var.environment
-  cloud_account_id        = data.aws_caller_identity.current.account_id
-  cloud_region            = var.aws_region
-  workload_name           = var.service_name
-  workload_resource_id    = aws_ecs_service.this.id
-  workload_type           = "ecs-service"
-  auto_register_boundary  = var.orion_boundary
+  environment            = var.environment
+  cloud_account_id       = data.aws_caller_identity.current.account_id
+  cloud_region           = var.aws_region
+  workload_name          = var.service_name
+  workload_resource_id   = aws_ecs_service.this.id
+  workload_type          = "ecs-service"
+  auto_register_boundary = var.orion_boundary
 }
 
 output "agent_id" {

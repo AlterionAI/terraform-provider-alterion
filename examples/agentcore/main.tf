@@ -97,12 +97,12 @@ resource "aws_bedrockagentcore_agent_runtime" "this" {
 # runtime resource directly, so Terraform infers the dependency; depends_on
 # is kept explicit anyway for clarity.
 resource "alterion_agent" "this" {
-  environment           = var.environment
-  cloud_account_id      = data.aws_caller_identity.current.account_id
-  cloud_region          = var.aws_region
-  workload_name         = aws_bedrockagentcore_agent_runtime.this.agent_runtime_name
-  workload_resource_id  = aws_bedrockagentcore_agent_runtime.this.agent_runtime_arn
-  workload_type         = "bedrock-agentcore-runtime"
+  environment            = var.environment
+  cloud_account_id       = data.aws_caller_identity.current.account_id
+  cloud_region           = var.aws_region
+  workload_name          = aws_bedrockagentcore_agent_runtime.this.agent_runtime_name
+  workload_resource_id   = aws_bedrockagentcore_agent_runtime.this.agent_runtime_arn
+  workload_type          = "bedrock-agentcore-runtime"
   auto_register_boundary = var.orion_boundary
 
   depends_on = [aws_bedrockagentcore_agent_runtime.this]
