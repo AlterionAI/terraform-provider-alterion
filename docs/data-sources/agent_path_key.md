@@ -29,7 +29,7 @@ Resolves the deterministic gateway path key for an asserted Orion agent, ahead o
 ### Read-Only
 
 - `agent_id` (String) The full asserted agent id, of the form asserted|<environment>|<identity key derived from cloud_provider, cloud_account_id, cloud_region, workload_name>.
-- `gateway_base_url` (String) Full gateway base URL for this agent. Populated from the server response, or computed locally from the provider's gateway_url + path_prefix + short_id when the server returns null and gateway_url is configured.
+- `gateway_base_url` (String) Complete base URL the agent must use for LLM calls. Set your runtime's SDK base-URL environment variable to this value. Always a full URL: populated from the server response's gatewayBaseUrl when present, otherwise composed from the provider's gateway_url + path_prefix + short_id.
 - `id` (String) Same value as agent_id.
 - `path_prefix` (String) Gateway path prefix segment (currently always "a").
 - `short_id` (String) 12 hex character short id derived from the agent id, used in gateway paths.

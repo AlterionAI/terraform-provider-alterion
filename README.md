@@ -30,9 +30,10 @@ provider "alterion" {
   orion_url = "https://orion.example.com"  # or ALTERION_ORION_URL
   api_token = var.alterion_api_token       # or ALTERION_API_TOKEN (recommended: use the env var, not a committed value)
 
-  # Optional. When set, the alterion_agent_path_key data source computes
-  # gateway_base_url locally (gateway_url + "/" + path_prefix + "/" + short_id)
-  # if the server response's gatewayBaseUrl was null.
+  # Required (or ALTERION_GATEWAY_URL): the Orion AI gateway's public base
+  # URL, no path. The alterion_agent_path_key data source's gateway_base_url
+  # is always built from it — either the server's own gatewayBaseUrl, or
+  # "<gateway_url>/<path_prefix>/<short_id>" when the server returns null.
   gateway_url = "https://gw.example.com"
 
   # Optional defaults for cloud_provider/cloud_account_id/cloud_region on
@@ -78,6 +79,37 @@ output "gateway_base_url" {
   value = data.alterion_agent_path_key.this.gateway_base_url
 }
 ```
+
+## How the agent gets its gateway URL
+
+This is the point of the whole flow, so it's worth stating plainly:
+
+1. The `alterion_agent_path_key` data source returns `gateway_base_url` —
+   always a complete URL, never null.
+2. Your cloud workload resource (an `aws_bedrockagentcore_agent_runtime`,
+   an ECS task definition, a Cloud Run service, etc.) sets its LLM SDK's
+   base-URL environment variable(s) to that value, in the **same
+   `terraform apply`** that creates the workload.
+3. **This provider never modifies any cloud resource itself.** It only
+   resolves and registers Orion-side state; wiring the value into the
+   runtime's environment is your Terraform config's job, using the cloud
+   provider's own resource types.
+
+The variable **name** depends on which SDK the agent uses — this provider
+has no way to know that, so it doesn't guess:
+
+| Agent's LLM SDK   | Environment variable  |
+| ----------------- | ---------------------- |
+| OpenAI SDK        | `OPENAI_BASE_URL`      |
+| Anthropic SDK      | `ANTHROPIC_BASE_URL`   |
+| LangChain / others | its own base-url setting (e.g. a client constructor argument, not always an env var) |
+
+The URL has to be **baked into the runtime at create time** — most
+runtimes don't hot-reload environment variables — which is why the data
+source resolves at plan time (step 1) and `alterion_agent` registration
+happens after the workload exists (step 3 below): the gateway URL is
+deterministic and doesn't depend on the agent being registered yet, so
+nothing blocks on that ordering.
 
 ### `resource "alterion_agent"`
 
@@ -197,12 +229,13 @@ Four layers, from fastest/cheapest to slowest/most expensive:
 4. **Live (opt-in) — `internal/acceptance_live/live_test.go`.** Runs
    create → read → update → destroy against a **real** Orion deployment.
    Skipped unless `TF_ACC_LIVE=1` plus `ALTERION_ORION_URL`,
-   `ALTERION_API_TOKEN`, `ALTERION_TEST_ACCOUNT_ID`, `ALTERION_TEST_REGION`
-   are all set; uses a timestamp-suffixed `workload_name` per run and
-   always archives the agent on cleanup (via `terraform-plugin-testing`'s
-   own post-test destroy). `make testacc-live`. Runs nightly in CI
-   (`.github/workflows/nightly-live.yml`, `workflow_dispatch` too) against
-   the `ALTERION_ORION_URL`/`ALTERION_API_TOKEN`/`ALTERION_TEST_ACCOUNT_ID`/
+   `ALTERION_API_TOKEN`, `ALTERION_GATEWAY_URL`, `ALTERION_TEST_ACCOUNT_ID`,
+   `ALTERION_TEST_REGION` are all set; uses a timestamp-suffixed
+   `workload_name` per run and always archives the agent on cleanup (via
+   `terraform-plugin-testing`'s own post-test destroy). `make testacc-live`.
+   Runs nightly in CI (`.github/workflows/nightly-live.yml`,
+   `workflow_dispatch` too) against the `ALTERION_ORION_URL`/
+   `ALTERION_API_TOKEN`/`ALTERION_GATEWAY_URL`/`ALTERION_TEST_ACCOUNT_ID`/
    `ALTERION_TEST_REGION` repo secrets; the job skips cleanly (a
    `::warning::`, not a failure) when those secrets aren't configured.
 
@@ -257,6 +290,10 @@ tfplugindocs generate --provider-name alterion
 - `auto_register_boundary` removed; replaced by `functional_boundaries`
   (a list) on `alterion_agent`. The environment boundary is always derived
   from `environment` — no separate opt-in needed for that.
+- `gateway_url` is now **required** (set directly or via
+  `ALTERION_GATEWAY_URL`) and validated as an absolute `https://`/`http://`
+  URL with no path. `gateway_base_url` on `alterion_agent_path_key` is now
+  guaranteed to always be a complete URL, never null.
 
 ## License
 

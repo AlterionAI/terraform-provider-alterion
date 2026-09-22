@@ -20,5 +20,5 @@ Manages Alterion Orion asserted agent registrations and resolves their gateway p
 - `cloud_account_id` (String) Default cloud_account_id for the resource and data source when they omit it.
 - `cloud_provider` (String) Default cloud_provider for the alterion_agent resource and alterion_agent_path_key data source when they omit it. One of aws, gcp, azure. Defaults to aws.
 - `cloud_region` (String) Default cloud_region for the resource and data source when they omit it.
-- `gateway_url` (String) Optional base URL for the Alterion gateway. When set, the alterion_agent_path_key data source computes gateway_base_url as "<gateway_url>/<path_prefix>/<short_id>" if the server did not return one.
+- `gateway_url` (String) Public base URL of the Orion AI gateway, e.g. https://gw.example.com. Required: the data source's gateway_base_url is built from it and must be injected into the agent runtime's environment. May also be set via the ALTERION_GATEWAY_URL environment variable. Must be an absolute https:// (or http:// for local use) URL with no path.
 - `orion_url` (String) Base URL of the Orion web app (e.g. https://orion.example.com). May also be set via the ALTERION_ORION_URL environment variable.

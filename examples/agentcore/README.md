@@ -47,6 +47,19 @@ nothing to default it from. This example uses the single `var.workload_name`
 for both, never the AgentCore runtime resource's own `agent_runtime_name`
 attribute, so the two can't drift apart.
 
+## Where the gateway URL actually goes
+
+`data.alterion_agent_path_key.this.gateway_base_url` is only a computed
+value until something reads it. Here that's the runtime's own
+`environment_variables` block, above: both `OPENAI_BASE_URL` and
+`ANTHROPIC_BASE_URL` are set to it, since this provider has no way to know
+which SDK the agent's code actually uses. This provider itself never
+touches `aws_bedrockagentcore_agent_runtime` or any other cloud resource —
+that wiring lives entirely in this Terraform config, using the AWS
+provider's own resource types. See the root
+[README](../../README.md#how-the-agent-gets-its-gateway-url) for the full
+variable-name table across SDKs.
+
 ## Boundaries
 
 Registering an agent always joins it to the environment boundary
@@ -74,6 +87,7 @@ terraform plan \
   -var="aws_region=us-east-1" \
   -var="workload_name=support-bot" \
   -var="environment=production" \
+  -var="orion_gateway_url=https://gw.example.com" \
   -var='functional_boundaries=["production-support"]'
 ```
 

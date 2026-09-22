@@ -5,6 +5,8 @@ package provider
 
 import (
 	"context"
+	"fmt"
+	"net/url"
 	"os"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -42,7 +44,7 @@ type alterionProviderModel struct {
 // resp.ResourceData / resp.DataSourceData.
 type AlterionProviderData struct {
 	Client         *client.Client
-	GatewayURL     string // optional; empty when unset
+	GatewayURL     string // required; validated non-empty absolute URL in Configure
 	CloudProvider  string // defaults to "aws"; see defaultCloudProvider
 	CloudAccountID string // optional; empty when unset
 	CloudRegion    string // optional; empty when unset
@@ -74,7 +76,7 @@ func (p *AlterionProvider) Schema(_ context.Context, _ provider.SchemaRequest, r
 			},
 			"gateway_url": schema.StringAttribute{
 				Optional:    true,
-				Description: "Optional base URL for the Alterion gateway. When set, the alterion_agent_path_key data source computes gateway_base_url as \"<gateway_url>/<path_prefix>/<short_id>\" if the server did not return one.",
+				Description: "Public base URL of the Orion AI gateway, e.g. https://gw.example.com. Required: the data source's gateway_base_url is built from it and must be injected into the agent runtime's environment. May also be set via the ALTERION_GATEWAY_URL environment variable. Must be an absolute https:// (or http:// for local use) URL with no path.",
 			},
 			"cloud_provider": schema.StringAttribute{
 				Optional:    true,
@@ -126,6 +128,24 @@ func (p *AlterionProvider) Configure(ctx context.Context, req provider.Configure
 		)
 	}
 
+	gatewayURL := config.GatewayURL.ValueString()
+	if gatewayURL == "" {
+		gatewayURL = os.Getenv("ALTERION_GATEWAY_URL")
+	}
+	if gatewayURL == "" {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("gateway_url"),
+			"Missing Gateway URL",
+			"The provider requires a gateway_url, set either in the provider configuration block or via the ALTERION_GATEWAY_URL environment variable. It is the public base URL of the Orion AI gateway that gateway_base_url is composed from and must be injected into the agent runtime's environment.",
+		)
+	} else if err := validateGatewayURL(gatewayURL); err != nil {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("gateway_url"),
+			"Invalid Gateway URL",
+			fmt.Sprintf("gateway_url %q is invalid: %s", gatewayURL, err),
+		)
+	}
+
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -135,7 +155,7 @@ func (p *AlterionProvider) Configure(ctx context.Context, req provider.Configure
 
 	data := &AlterionProviderData{
 		Client:         c,
-		GatewayURL:     config.GatewayURL.ValueString(),
+		GatewayURL:     gatewayURL,
 		CloudProvider:  defaultCloudProvider(config.CloudProvider),
 		CloudAccountID: config.CloudAccountID.ValueString(),
 		CloudRegion:    config.CloudRegion.ValueString(),
@@ -143,6 +163,29 @@ func (p *AlterionProvider) Configure(ctx context.Context, req provider.Configure
 
 	resp.DataSourceData = data
 	resp.ResourceData = data
+}
+
+// validateGatewayURL requires an absolute http(s) URL with no path, query,
+// or fragment — just scheme + host, so it can safely have "/<path_prefix>/
+// <short_id>" appended.
+func validateGatewayURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("not a valid URL: %w", err)
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return fmt.Errorf("scheme must be https:// (or http:// for local use), got %q", u.Scheme)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("must include a host")
+	}
+	if u.Path != "" && u.Path != "/" {
+		return fmt.Errorf("must not include a path, got %q", u.Path)
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("must not include a query or fragment")
+	}
+	return nil
 }
 
 func (p *AlterionProvider) Resources(_ context.Context) []func() resource.Resource {

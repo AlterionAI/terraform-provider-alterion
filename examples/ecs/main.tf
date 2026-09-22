@@ -47,9 +47,24 @@ variable "cluster_arn" {
   description = "ARN of the existing ECS cluster the service runs on."
 }
 
-variable "task_definition_arn" {
+variable "container_name" {
   type        = string
-  description = "ARN of the task definition the service runs."
+  description = "Name of the container in the task definition that runs the agent."
+}
+
+variable "container_image" {
+  type        = string
+  description = "Container image for the agent (e.g. an ECR image URI)."
+}
+
+variable "task_execution_role_arn" {
+  type        = string
+  description = "IAM role ECS uses to pull the image and write logs."
+}
+
+variable "orion_gateway_url" {
+  type        = string
+  description = "Public base URL of the Orion AI gateway (or set ALTERION_GATEWAY_URL instead)."
 }
 
 provider "aws" {
@@ -67,6 +82,11 @@ provider "alterion" {
   # a token to version control.
   orion_url = "https://orion.example.com"
 
+  # Required: the data source's gateway_base_url is built from this and
+  # must be injected into the task definition's container environment
+  # below.
+  gateway_url = var.orion_gateway_url
+
   # Set once here so neither the data source nor the resource below repeats
   # them; cloud_provider defaults to "aws" on the provider itself too.
   cloud_account_id = data.aws_caller_identity.current.account_id
@@ -82,10 +102,33 @@ data "alterion_agent_path_key" "this" {
   workload_name = var.workload_name
 }
 
+# Task definition carries the gateway URL into the container's own
+# environment. Orion gateway URL from the data source; pick the variable
+# your SDK reads.
+resource "aws_ecs_task_definition" "this" {
+  family                   = var.workload_name
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = "256"
+  memory                   = "512"
+  execution_role_arn       = var.task_execution_role_arn
+
+  container_definitions = jsonencode([
+    {
+      name  = var.container_name
+      image = var.container_image
+      environment = [
+        { name = "OPENAI_BASE_URL", value = data.alterion_agent_path_key.this.gateway_base_url },
+        { name = "ANTHROPIC_BASE_URL", value = data.alterion_agent_path_key.this.gateway_base_url },
+      ]
+    }
+  ])
+}
+
 resource "aws_ecs_service" "this" {
   name            = var.workload_name
   cluster         = var.cluster_arn
-  task_definition = var.task_definition_arn
+  task_definition = aws_ecs_task_definition.this.arn
   desired_count   = 1
 }
 

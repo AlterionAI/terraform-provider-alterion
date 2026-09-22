@@ -25,6 +25,11 @@ variable "agent_role_arn" {
   description = "IAM role the AgentCore runtime assumes."
 }
 
+variable "orion_gateway_url" {
+  type        = string
+  description = "Public base URL of the Orion AI gateway (or set ALTERION_GATEWAY_URL instead)."
+}
+
 variable "environment" {
   type        = string
   description = "One of production, staging, development."
@@ -56,9 +61,9 @@ provider "alterion" {
   # a token to version control.
   orion_url = "https://orion.example.com"
 
-  # Optional: lets the data source compute gateway_base_url locally if the
-  # server ever returns a null one.
-  gateway_url = "https://gw.example.com"
+  # Required: the data source's gateway_base_url is built from this and
+  # must be injected into the runtime's environment below.
+  gateway_url = var.orion_gateway_url
 
   # Set once here so neither the data source nor the resource below repeats
   # them; cloud_provider defaults to "aws" on the provider itself too.
@@ -94,6 +99,7 @@ resource "aws_bedrockagentcore_agent_runtime" "this" {
     network_mode = "PUBLIC"
   }
 
+  # Orion gateway URL from the data source; pick the variable your SDK reads.
   environment_variables = {
     OPENAI_BASE_URL    = data.alterion_agent_path_key.this.gateway_base_url
     ANTHROPIC_BASE_URL = data.alterion_agent_path_key.this.gateway_base_url

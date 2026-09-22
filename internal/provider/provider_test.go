@@ -545,8 +545,9 @@ resource "alterion_agent" "this" {
 func providerConfig(baseURL string) string {
 	return `
 provider "alterion" {
-  orion_url  = "` + baseURL + `"
-  api_token  = "orion_at_testtoken"
+  orion_url   = "` + baseURL + `"
+  api_token   = "orion_at_testtoken"
+  gateway_url = "https://gw.example.com"
 }
 `
 }
@@ -556,6 +557,7 @@ func providerConfigWithCloudDefaults(baseURL, cloudProvider, cloudAccountID, clo
 provider "alterion" {
   orion_url        = "` + baseURL + `"
   api_token        = "orion_at_testtoken"
+  gateway_url      = "https://gw.example.com"
   cloud_provider   = "` + cloudProvider + `"
   cloud_account_id = "` + cloudAccountID + `"
   cloud_region     = "` + cloudRegion + `"

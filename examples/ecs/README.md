@@ -26,13 +26,28 @@ Same as [`examples/agentcore`](../agentcore):
 
 ```
 1. data.alterion_agent_path_key   →  resolved at plan time from environment + workload_name
-2. aws_ecs_service                →  created
-3. alterion_agent                 →  registered, depends_on the service
+2. aws_ecs_task_definition        →  created, with the gateway URL baked into the container's environment
+3. aws_ecs_service                →  created, referencing the task definition
+4. alterion_agent                 →  registered, depends_on the service
 ```
 
 `workload_resource_id` here is `aws_ecs_service.this.id`, which for
 `aws_ecs_service` is itself the service's ARN; `workload_type` is
 `"ecs-service"`.
+
+## Where the gateway URL actually goes
+
+Unlike the AgentCore example, an ECS service doesn't take environment
+variables directly — they belong to its **task definition**'s container
+definitions. `aws_ecs_task_definition.this` sets `OPENAI_BASE_URL` and
+`ANTHROPIC_BASE_URL` on its one container to
+`data.alterion_agent_path_key.this.gateway_base_url`, and
+`aws_ecs_service.this` references that task definition by ARN. This
+provider never touches `aws_ecs_task_definition`/`aws_ecs_service`
+directly — the injection is ordinary Terraform wiring between resources,
+same as the AgentCore example. See the root
+[README](../../README.md#how-the-agent-gets-its-gateway-url) for the full
+variable-name table across SDKs.
 
 ## Boundaries
 
@@ -51,9 +66,12 @@ terraform plan \
   -var="aws_region=us-east-1" \
   -var="workload_name=support-bot" \
   -var="environment=production" \
+  -var="orion_gateway_url=https://gw.example.com" \
   -var='functional_boundaries=["production-support"]' \
   -var="cluster_arn=arn:aws:ecs:us-east-1:123456789012:cluster/example" \
-  -var="task_definition_arn=arn:aws:ecs:us-east-1:123456789012:task-definition/example:1"
+  -var="container_name=support-bot" \
+  -var="container_image=123456789012.dkr.ecr.us-east-1.amazonaws.com/support-bot:latest" \
+  -var="task_execution_role_arn=arn:aws:iam::123456789012:role/ecsTaskExecutionRole"
 ```
 
 See the root [README](../../README.md) for the full attribute reference and

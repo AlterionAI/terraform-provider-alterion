@@ -22,6 +22,7 @@ import (
 var requiredLiveEnv = []string{
 	"ALTERION_ORION_URL",
 	"ALTERION_API_TOKEN",
+	"ALTERION_GATEWAY_URL",
 	"ALTERION_TEST_ACCOUNT_ID",
 	"ALTERION_TEST_REGION",
 }
@@ -79,6 +80,7 @@ func TestLiveAgentLifecycle(t *testing.T) {
 provider "alterion" {
   orion_url        = %q
   api_token        = %q
+  gateway_url      = %q
   cloud_provider   = "aws"
   cloud_account_id = %q
   cloud_region     = %q
@@ -89,7 +91,7 @@ resource "alterion_agent" "live" {
   workload_name = %q
   display_name  = %q
 }
-`, env["ALTERION_ORION_URL"], env["ALTERION_API_TOKEN"], env["ALTERION_TEST_ACCOUNT_ID"], env["ALTERION_TEST_REGION"], workloadName, displayName)
+`, env["ALTERION_ORION_URL"], env["ALTERION_API_TOKEN"], env["ALTERION_GATEWAY_URL"], env["ALTERION_TEST_ACCOUNT_ID"], env["ALTERION_TEST_REGION"], workloadName, displayName)
 	}
 
 	resource.Test(t, resource.TestCase{
@@ -135,6 +137,7 @@ func TestLivePathKeyDataSource(t *testing.T) {
 provider "alterion" {
   orion_url        = %q
   api_token        = %q
+  gateway_url      = %q
   cloud_provider   = "aws"
   cloud_account_id = %q
   cloud_region     = %q
@@ -144,7 +147,7 @@ data "alterion_agent_path_key" "live" {
   environment   = "development"
   workload_name = %q
 }
-`, env["ALTERION_ORION_URL"], env["ALTERION_API_TOKEN"], env["ALTERION_TEST_ACCOUNT_ID"], env["ALTERION_TEST_REGION"], workloadName)
+`, env["ALTERION_ORION_URL"], env["ALTERION_API_TOKEN"], env["ALTERION_GATEWAY_URL"], env["ALTERION_TEST_ACCOUNT_ID"], env["ALTERION_TEST_REGION"], workloadName)
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: liveProtoV6ProviderFactories(),

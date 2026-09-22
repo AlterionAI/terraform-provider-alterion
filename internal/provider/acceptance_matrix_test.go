@@ -551,6 +551,116 @@ data "alterion_agent_path_key" "this" {
 	})
 }
 
+// TestAccProvider_MissingGatewayURL proves gateway_url is required: with
+// neither the config attribute nor ALTERION_GATEWAY_URL set, Configure
+// errors instead of silently leaving gateway_base_url uncomposed.
+func TestAccProvider_MissingGatewayURL(t *testing.T) {
+	server := newFakeOrionServer(t)
+	defer server.Close()
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories(),
+		Steps: []resource.TestStep{
+			{
+				Config: `
+provider "alterion" {
+  orion_url = "` + server.URL + `"
+  api_token = "orion_at_testtoken"
+}
+
+data "alterion_agent_path_key" "this" {
+  environment      = "staging"
+  cloud_provider   = "aws"
+  cloud_account_id = "123456789012"
+  cloud_region     = "us-east-1"
+  workload_name    = "ClaimsReview"
+}
+`,
+				ExpectError: regexp.MustCompile(`Missing Gateway URL`),
+			},
+		},
+	})
+}
+
+// TestAccProvider_GatewayURLFromEnv proves ALTERION_GATEWAY_URL satisfies
+// the requirement when the config attribute is omitted, exactly like
+// orion_url/api_token's own env fallbacks.
+func TestAccProvider_GatewayURLFromEnv(t *testing.T) {
+	server := newFakeOrionServer(t)
+	defer server.Close()
+
+	t.Setenv("ALTERION_GATEWAY_URL", "https://gw-from-env.example.com")
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories(),
+		Steps: []resource.TestStep{
+			{
+				Config: `
+provider "alterion" {
+  orion_url = "` + server.URL + `"
+  api_token = "orion_at_testtoken"
+}
+
+data "alterion_agent_path_key" "this" {
+  environment      = "staging"
+  cloud_provider   = "aws"
+  cloud_account_id = "123456789012"
+  cloud_region     = "us-east-1"
+  workload_name    = "ClaimsReview"
+}
+`,
+				Check: resource.TestCheckResourceAttrSet("data.alterion_agent_path_key.this", "gateway_base_url"),
+			},
+		},
+	})
+}
+
+// TestAccProvider_InvalidGatewayURL table-tests gateway_url rejections:
+// bad scheme, no host, and a non-empty path (which would break the
+// "<gateway_url>/<path_prefix>/<short_id>" composition).
+func TestAccProvider_InvalidGatewayURL(t *testing.T) {
+	cases := []struct {
+		name       string
+		gatewayURL string
+	}{
+		{name: "bad scheme", gatewayURL: "ftp://gw.example.com"},
+		{name: "no host", gatewayURL: "https:///a"},
+		{name: "has path", gatewayURL: "https://gw.example.com/gateway"},
+		{name: "has query", gatewayURL: "https://gw.example.com?foo=bar"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := newFakeOrionServer(t)
+			defer server.Close()
+
+			resource.Test(t, resource.TestCase{
+				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories(),
+				Steps: []resource.TestStep{
+					{
+						Config: `
+provider "alterion" {
+  orion_url   = "` + server.URL + `"
+  api_token   = "orion_at_testtoken"
+  gateway_url = "` + tc.gatewayURL + `"
+}
+
+data "alterion_agent_path_key" "this" {
+  environment      = "staging"
+  cloud_provider   = "aws"
+  cloud_account_id = "123456789012"
+  cloud_region     = "us-east-1"
+  workload_name    = "ClaimsReview"
+}
+`,
+						ExpectError: regexp.MustCompile(`Invalid Gateway URL`),
+					},
+				},
+			})
+		})
+	}
+}
+
 // TestAccAgentResource_ProviderDefaultOverriddenByResource proves a
 // resource-level identity attribute wins over the provider's default
 // (precedence: resource/data-source > provider block).

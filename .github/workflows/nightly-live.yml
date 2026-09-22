@@ -24,9 +24,10 @@ jobs:
         id: secrets
         run: |
           if [ -z "${{ secrets.ALTERION_ORION_URL }}" ] || [ -z "${{ secrets.ALTERION_API_TOKEN }}" ] || \
+             [ -z "${{ secrets.ALTERION_GATEWAY_URL }}" ] || \
              [ -z "${{ secrets.ALTERION_TEST_ACCOUNT_ID }}" ] || [ -z "${{ secrets.ALTERION_TEST_REGION }}" ]; then
             echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Skipping nightly live acceptance: one or more of ALTERION_ORION_URL, ALTERION_API_TOKEN, ALTERION_TEST_ACCOUNT_ID, ALTERION_TEST_REGION secrets are not set on this repo."
+            echo "::warning::Skipping nightly live acceptance: one or more of ALTERION_ORION_URL, ALTERION_API_TOKEN, ALTERION_GATEWAY_URL, ALTERION_TEST_ACCOUNT_ID, ALTERION_TEST_REGION secrets are not set on this repo."
           else
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
@@ -36,6 +37,7 @@ jobs:
           TF_ACC_LIVE: "1"
           ALTERION_ORION_URL: ${{ secrets.ALTERION_ORION_URL }}
           ALTERION_API_TOKEN: ${{ secrets.ALTERION_API_TOKEN }}
+          ALTERION_GATEWAY_URL: ${{ secrets.ALTERION_GATEWAY_URL }}
           ALTERION_TEST_ACCOUNT_ID: ${{ secrets.ALTERION_TEST_ACCOUNT_ID }}
           ALTERION_TEST_REGION: ${{ secrets.ALTERION_TEST_REGION }}
         run: go test ./internal/acceptance_live/... -v -timeout 20m

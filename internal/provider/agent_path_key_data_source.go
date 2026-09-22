@@ -129,7 +129,7 @@ func (d *agentPathKeyDataSource) Schema(_ context.Context, _ datasource.SchemaRe
 			},
 			"gateway_base_url": schema.StringAttribute{
 				Computed:    true,
-				Description: "Full gateway base URL for this agent. Populated from the server response, or computed locally from the provider's gateway_url + path_prefix + short_id when the server returns null and gateway_url is configured.",
+				Description: "Complete base URL the agent must use for LLM calls. Set your runtime's SDK base-URL environment variable to this value. Always a full URL: populated from the server response's gatewayBaseUrl when present, otherwise composed from the provider's gateway_url + path_prefix + short_id.",
 			},
 		},
 	}
