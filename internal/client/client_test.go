@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 )
 
 func newTestServer(t *testing.T, handler http.HandlerFunc) (*Client, func()) {
@@ -301,6 +303,335 @@ func TestDeleteAgent_NotFound404(t *testing.T) {
 	apiErr, ok := err.(*APIError)
 	if !ok || apiErr.Status != http.StatusNotFound {
 		t.Fatalf("expected 404 APIError, got %v", err)
+	}
+}
+
+// TestRequestShape asserts the outbound request headers/method/path for
+// every route: Authorization: Bearer, User-Agent, JSON body field names
+// (including functionalBoundaries) on POST.
+func TestRequestShape(t *testing.T) {
+	Version = "1.2.3"
+	defer func() { Version = "dev" }()
+
+	var gotMethod, gotPath, gotAuth, gotUA, gotAccept, gotContentType string
+	var gotBody map[string]interface{}
+
+	c, closeFn := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		gotUA = r.Header.Get("User-Agent")
+		gotAccept = r.Header.Get("Accept")
+		gotContentType = r.Header.Get("Content-Type")
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(CreateAgentResponse{Success: true, ShortID: "abc123"})
+	})
+	defer closeFn()
+
+	_, err := c.CreateAgent(context.Background(), CreateAgentRequest{
+		Environment:          "production",
+		CloudProvider:        "aws",
+		CloudAccountID:       "123456789012",
+		CloudRegion:          "us-east-1",
+		WorkloadName:         "support-bot",
+		WorkloadResourceID:   "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/support-bot",
+		WorkloadType:         "bedrock-agentcore-runtime",
+		DisplayName:          "Support Bot",
+		FunctionalBoundaries: []string{"production-support"},
+		Adopt:                true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if gotMethod != http.MethodPost {
+		t.Errorf("expected POST, got %s", gotMethod)
+	}
+	if gotPath != "/api/v1/agents/asserted" {
+		t.Errorf("unexpected path: %s", gotPath)
+	}
+	if gotAuth != "Bearer orion_at_testtoken" {
+		t.Errorf("unexpected Authorization header: %s", gotAuth)
+	}
+	if gotUA != "terraform-provider-alterion/1.2.3" {
+		t.Errorf("unexpected User-Agent header: %s", gotUA)
+	}
+	if gotAccept != "application/json" {
+		t.Errorf("unexpected Accept header: %s", gotAccept)
+	}
+	if gotContentType != "application/json" {
+		t.Errorf("unexpected Content-Type header: %s", gotContentType)
+	}
+
+	wantFields := map[string]interface{}{
+		"environment":        "production",
+		"cloudProvider":      "aws",
+		"cloudAccountId":     "123456789012",
+		"cloudRegion":        "us-east-1",
+		"workloadName":       "support-bot",
+		"workloadResourceId": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/support-bot",
+		"workloadType":       "bedrock-agentcore-runtime",
+		"displayName":        "Support Bot",
+		"adopt":              true,
+	}
+	for field, want := range wantFields {
+		if got := gotBody[field]; got != want {
+			t.Errorf("body field %q = %v, want %v", field, got, want)
+		}
+	}
+	fb, ok := gotBody["functionalBoundaries"].([]interface{})
+	if !ok || len(fb) != 1 || fb[0] != "production-support" {
+		t.Errorf("unexpected functionalBoundaries field: %+v", gotBody["functionalBoundaries"])
+	}
+}
+
+// TestGetPathKey_NoAuthHeaderLeak just re-confirms GET requests carry no
+// body/Content-Type header (GET never sends a JSON body).
+func TestGetPathKey_NoContentTypeOnGET(t *testing.T) {
+	var gotContentType string
+	c, closeFn := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		gotContentType = r.Header.Get("Content-Type")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(PathKeyResponse{Success: true})
+	})
+	defer closeFn()
+
+	identity := WorkloadIdentity{CloudProvider: "aws", CloudAccountID: "123456789012", CloudRegion: "us-east-1", WorkloadName: "x"}
+	if _, err := c.GetPathKey(context.Background(), "staging", identity); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotContentType != "" {
+		t.Errorf("expected no Content-Type on GET, got %q", gotContentType)
+	}
+}
+
+// TestTypedAPIError_CodeAndBoundaryName proves the client parses "code"
+// and "boundaryName" off the error body into the typed *APIError.
+func TestTypedAPIError_CodeAndBoundaryName(t *testing.T) {
+	c, closeFn := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(errorBody{
+			Success:      false,
+			Error:        "functional boundary not found",
+			Code:         "ASSERTED_WORKLOAD_BOUNDARY_NOT_FOUND",
+			BoundaryName: "finance",
+		})
+	})
+	defer closeFn()
+
+	_, err := c.CreateAgent(context.Background(), CreateAgentRequest{Environment: "production", CloudProvider: "aws", CloudAccountID: "123456789012", CloudRegion: "us-east-1", WorkloadName: "x", DisplayName: "X"})
+	apiErr, ok := err.(*APIError)
+	if !ok {
+		t.Fatalf("expected *APIError, got %T", err)
+	}
+	if apiErr.Code != "ASSERTED_WORKLOAD_BOUNDARY_NOT_FOUND" {
+		t.Errorf("unexpected code: %s", apiErr.Code)
+	}
+	if apiErr.BoundaryName != "finance" {
+		t.Errorf("unexpected boundary name: %s", apiErr.BoundaryName)
+	}
+	if !strings.Contains(apiErr.Error(), "finance") {
+		t.Errorf("expected error message to mention boundary, got: %s", apiErr.Error())
+	}
+}
+
+// TestTypedAPIError_Unauthorized401Message proves the 401 message tells
+// the caller to mint a new token, per the API contract (token invalid,
+// expired, revoked, or owner lost the approver role).
+func TestTypedAPIError_Unauthorized401Message(t *testing.T) {
+	c, closeFn := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(errorBody{Success: false, Error: "token expired"})
+	})
+	defer closeFn()
+
+	_, err := c.GetAgent(context.Background(), "shortid")
+	apiErr, ok := err.(*APIError)
+	if !ok || apiErr.Status != http.StatusUnauthorized {
+		t.Fatalf("expected 401 APIError, got %v", err)
+	}
+	if !strings.Contains(apiErr.Error(), "mint a new token") {
+		t.Errorf("expected 401 error message to say to mint a new token, got: %s", apiErr.Error())
+	}
+}
+
+// TestErrorCodes_AllListedCodes table-drives every error code/status pair
+// from the API contract, proving each round-trips through the typed
+// *APIError with the right status and code.
+func TestErrorCodes_AllListedCodes(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		code   string
+	}{
+		{"invalid asserted workload", http.StatusBadRequest, "INVALID_ASSERTED_WORKLOAD"},
+		{"owned by other", http.StatusConflict, "ASSERTED_WORKLOAD_OWNED_BY_OTHER"},
+		{"unowned", http.StatusConflict, "ASSERTED_WORKLOAD_UNOWNED"},
+		{"short id collision", http.StatusConflict, "ASSERTED_WORKLOAD_SHORT_ID_COLLISION"},
+		{"boundary not found", http.StatusBadRequest, "ASSERTED_WORKLOAD_BOUNDARY_NOT_FOUND"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.code, func(t *testing.T) {
+			c, closeFn := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_ = json.NewEncoder(w).Encode(errorBody{Success: false, Error: tc.name, Code: tc.code})
+			})
+			defer closeFn()
+
+			_, err := c.GetAgent(context.Background(), "shortid")
+			apiErr, ok := err.(*APIError)
+			if !ok {
+				t.Fatalf("expected *APIError, got %T", err)
+			}
+			if apiErr.Status != tc.status || apiErr.Code != tc.code {
+				t.Errorf("got status=%d code=%s, want status=%d code=%s", apiErr.Status, apiErr.Code, tc.status, tc.code)
+			}
+		})
+	}
+}
+
+// TestRouteLevelStatuses_401_403_404_500 covers the route-level statuses
+// that apply regardless of endpoint-specific error codes.
+func TestRouteLevelStatuses_401_403_404_500(t *testing.T) {
+	statuses := []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusInternalServerError}
+
+	for _, status := range statuses {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			c, closeFn := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+				_ = json.NewEncoder(w).Encode(errorBody{Success: false, Error: "route level error"})
+			})
+			defer closeFn()
+
+			_, err := c.GetAgent(context.Background(), "shortid")
+			apiErr, ok := err.(*APIError)
+			if !ok || apiErr.Status != status {
+				t.Fatalf("expected %d APIError, got %v", status, err)
+			}
+		})
+	}
+}
+
+// TestGetAgent_5xxGeneric covers a bare 500 with a plain-text (non-JSON)
+// body, which must still surface as a typed *APIError with the raw body
+// as the message.
+func TestGetAgent_5xxGeneric(t *testing.T) {
+	c, closeFn := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("internal server error"))
+	})
+	defer closeFn()
+
+	_, err := c.GetAgent(context.Background(), "shortid")
+	apiErr, ok := err.(*APIError)
+	if !ok || apiErr.Status != http.StatusInternalServerError {
+		t.Fatalf("expected 500 APIError, got %v", err)
+	}
+	if apiErr.Message != "internal server error" {
+		t.Errorf("unexpected message: %q", apiErr.Message)
+	}
+}
+
+// TestGetAgent_MalformedJSONOnSuccess proves a 2xx response with a body
+// that isn't valid JSON surfaces as a plain (non-APIError) decode error.
+func TestGetAgent_MalformedJSONOnSuccess(t *testing.T) {
+	c, closeFn := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{not valid json"))
+	})
+	defer closeFn()
+
+	_, err := c.GetAgent(context.Background(), "shortid")
+	if err == nil {
+		t.Fatal("expected a decode error, got nil")
+	}
+	if _, ok := err.(*APIError); ok {
+		t.Fatalf("expected a plain decode error, got *APIError: %v", err)
+	}
+	if !strings.Contains(err.Error(), "decode orion api response") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestGetAgent_MalformedJSONOnError proves a non-2xx response with a body
+// that isn't valid JSON still surfaces as a typed *APIError, falling back
+// to the raw body text as the message.
+func TestGetAgent_MalformedJSONOnError(t *testing.T) {
+	c, closeFn := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("<html>bad gateway</html>"))
+	})
+	defer closeFn()
+
+	_, err := c.GetAgent(context.Background(), "shortid")
+	apiErr, ok := err.(*APIError)
+	if !ok || apiErr.Status != http.StatusBadGateway {
+		t.Fatalf("expected 502 APIError, got %v", err)
+	}
+	if apiErr.Message != "<html>bad gateway</html>" {
+		t.Errorf("unexpected fallback message: %q", apiErr.Message)
+	}
+}
+
+// TestGetAgent_ConnectionRefused proves a connection failure (server
+// closed) surfaces as a plain error, not an *APIError (there was no HTTP
+// response to type).
+func TestGetAgent_ConnectionRefused(t *testing.T) {
+	c, closeFn := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	closeFn() // close immediately so the connection is refused
+
+	_, err := c.GetAgent(context.Background(), "shortid")
+	if err == nil {
+		t.Fatal("expected a connection error, got nil")
+	}
+	if _, ok := err.(*APIError); ok {
+		t.Fatalf("expected a plain connection error, got *APIError: %v", err)
+	}
+	if !strings.Contains(err.Error(), "orion api request failed") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestGetAgent_Timeout proves a server that never responds within the
+// client's timeout surfaces as a plain (non-APIError) timeout error.
+func TestGetAgent_Timeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "orion_at_testtoken")
+	c.httpClient.Timeout = 20 * time.Millisecond
+
+	_, err := c.GetAgent(context.Background(), "shortid")
+	if err == nil {
+		t.Fatal("expected a timeout error, got nil")
+	}
+	if _, ok := err.(*APIError); ok {
+		t.Fatalf("expected a plain timeout error, got *APIError: %v", err)
+	}
+}
+
+// TestGetAgent_ContextCanceled proves a canceled context surfaces as a
+// plain error too, distinct from a server-side timeout.
+func TestGetAgent_ContextCanceled(t *testing.T) {
+	c, closeFn := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	})
+	defer closeFn()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := c.GetAgent(ctx, "shortid")
+	if err == nil {
+		t.Fatal("expected a context-canceled error, got nil")
 	}
 }
 
