@@ -20,6 +20,11 @@ variable "workload_name" {
   description = "Name of the AgentCore runtime (agent_runtime_name). Case-sensitive; must match AWS Bedrock AgentCore's own naming rule: starts with a letter, then letters/digits/underscores, up to 48 characters. Used for both the data source and the resource, so they can't drift."
 }
 
+variable "agent_role_arn" {
+  type        = string
+  description = "IAM role the AgentCore runtime assumes."
+}
+
 variable "environment" {
   type        = string
   description = "One of production, staging, development."
@@ -77,6 +82,7 @@ data "alterion_agent_path_key" "this" {
 # gateway path key computed above.
 resource "aws_bedrockagentcore_agent_runtime" "this" {
   agent_runtime_name = var.workload_name
+  role_arn           = var.agent_role_arn
 
   agent_runtime_artifact {
     container_configuration {
