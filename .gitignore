@@ -1,5 +1,6 @@
 # Go
 /dist/
+/terraform-provider-alterion
 *.exe
 *.exe~
 *.dll

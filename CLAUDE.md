@@ -41,9 +41,15 @@ this exists to support.
 go build ./...
 go vet ./...
 gofmt -l .            # must print nothing
-go test ./...                                    # unit tests only
+go test ./...                                    # unit tests only (internal/client + provider validators)
 TF_ACC=1 go test ./... -run TestAcc -v            # + acceptance-style tests
+UPDATE_SNAPSHOT=1 go test ./internal/provider/... -run TestSchemaSnapshot   # after an intentional schema change
 ```
+
+Or via the Makefile: `make lint test testacc snapshot docs`. See README
+"Testing" for the four coverage layers (client unit / validator unit /
+in-process acceptance / opt-in live) and what each CI job in
+`.github/workflows/ci.yml` + `nightly-live.yml` checks.
 
 ## Module path & registry address
 

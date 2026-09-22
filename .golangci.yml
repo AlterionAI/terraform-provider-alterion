@@ -1,0 +1,15 @@
+version: "2"
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  exclusions:
+    rules:
+      # Table-driven test files use "_ = err" style discards in httptest
+      # handlers intentionally; keep signal on non-test code instead.
+      - path: _test\.go
+        linters:
+          - errcheck

@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  GO_VERSION: "1.27"
+
 jobs:
   gitleaks:
     name: Secret scan
@@ -39,14 +42,14 @@ jobs:
         if: github.event_name != 'pull_request'
         run: /tmp/gitleaks git --redact --exit-code=1 .
 
-  go:
-    name: Go vet / test / build
+  lint:
+    name: Lint (gofmt / vet / golangci-lint)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.27"
+          go-version: ${{ env.GO_VERSION }}
       - name: gofmt check
         run: |
           fmt_out="$(gofmt -l .)"
@@ -57,37 +60,158 @@ jobs:
           fi
       - name: go vet
         run: go vet ./...
-      - name: go build
-        run: go build ./...
-      - name: go test (unit)
-        run: go test ./internal/client/... -v
-      - name: go test (acceptance, in-process fake Orion server)
-        env:
-          TF_ACC: "1"
-        run: go test ./internal/provider/... -v
-        # TestAcc* fakes Orion via httptest.Server; still needs a real
-        # `terraform` binary on PATH for protocol handshaking (below).
-      - uses: hashicorp/setup-terraform@v3
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
         with:
-          terraform_wrapper: false
+          version: latest
 
-  terraform-examples:
-    name: terraform fmt/validate on examples
+  unit:
+    name: Unit tests + coverage gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: go build
+        run: go build ./...
+      # internal/client is the fully network-free, non-TF_ACC-gated unit
+      # layer (HTTP client + identity/contract tests); coverage there is
+      # what the gate below enforces. internal/provider's validators also
+      # run here (no TF_ACC needed for validator unit tests), but that
+      # package's full coverage only lands in the "acceptance" job below,
+      # where Create/Read/Update/Delete actually execute through a real
+      # plan/apply cycle.
+      - name: go test (internal/client)
+        run: go test ./internal/client/... -race -v -coverprofile=coverage-client.out
+      - name: go test (internal/provider validators, no TF_ACC)
+        run: go test ./internal/provider/... -race -v -run 'Validator_TableDriven|TestSchemaSnapshot'
+      - name: Coverage gate (internal/client >= 85%)
+        run: |
+          set -euo pipefail
+          pct="$(go tool cover -func=coverage-client.out | tail -1 | awk '{print $3}' | tr -d '%')"
+          echo "internal/client coverage: ${pct}%"
+          awk -v p="$pct" 'BEGIN { if (p+0 < 85) { print "coverage gate failed: " p "% < 85%"; exit 1 } }'
+
+  acceptance:
+    name: Acceptance (Terraform ${{ matrix.terraform }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - terraform: "1.5.7"
+            tool: terraform
+          - terraform: "1.9.*"
+            tool: terraform
+          - terraform: "latest"
+            tool: terraform
+          - terraform: "latest"
+            tool: opentofu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - uses: hashicorp/setup-terraform@v3
+        if: matrix.tool == 'terraform'
+        with:
+          terraform_version: ${{ matrix.terraform }}
+          terraform_wrapper: false
+      - uses: opentofu/setup-opentofu@v1
+        if: matrix.tool == 'opentofu'
+        with:
+          tofu_version: ${{ matrix.terraform }}
+      - name: Resolve tofu path
+        if: matrix.tool == 'opentofu'
+        run: echo "TF_ACC_TERRAFORM_PATH=$(command -v tofu)" >> "$GITHUB_ENV"
+      - name: go test (acceptance, in-process fake Orion server)
+        env:
+          TF_ACC: "1"
+          # terraform-plugin-testing requires TF_ACC_PROVIDER_NAMESPACE
+          # when driving OpenTofu, whose default provider namespace/host
+          # differs from Terraform's ("hashicorp" resolves against
+          # registry.opentofu.org the same as it does against
+          # registry.terraform.io). TF_ACC_TERRAFORM_PATH is set above.
+          TF_ACC_PROVIDER_NAMESPACE: ${{ matrix.tool == 'opentofu' && 'hashicorp' || '' }}
+        run: go test ./internal/provider/... -run TestAcc -v -timeout 20m
+
+  schema-snapshot:
+    name: Schema snapshot
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: go test (schema snapshot)
+        run: go test ./internal/provider/... -run TestSchemaSnapshot -v
+
+  docs-drift:
+    name: Docs drift (tfplugindocs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+      - name: Install tfplugindocs
+        run: go install github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs@latest
+      - name: tfplugindocs validate
+        run: tfplugindocs validate
+      - name: tfplugindocs generate
+        run: tfplugindocs generate --provider-name alterion
+      - name: Fail if docs/ drifted from generated output
+        run: git diff --exit-code docs/
+
+  examples:
+    name: Validate examples (dev overrides, real network)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_wrapper: false
       - name: terraform fmt -check
         run: terraform fmt -check -recursive examples/
-      - name: terraform init (offline)
-        # May fail without registry network access in a locked-down
-        # runner; allowed to fail so a real misconfiguration still shows.
-        continue-on-error: true
+      - name: Build provider binary
+        run: go build -o terraform-provider-alterion .
+      - name: Write dev_overrides CLI config
+        run: |
+          cat > "$HOME/.terraformrc" <<EOF
+          provider_installation {
+            dev_overrides {
+              "alterion/alterion" = "${{ github.workspace }}"
+            }
+            direct {}
+          }
+          EOF
+      - name: terraform init + validate (agentcore)
         working-directory: examples/agentcore
-        run: terraform init -backend=false
-      - name: terraform validate
-        continue-on-error: true
-        working-directory: examples/agentcore
-        run: terraform validate
+        run: |
+          set -euo pipefail
+          # GitHub-hosted runners have registry network access; retry only
+          # to absorb registry.terraform.io flakiness, never as a blanket
+          # allow-failure.
+          for attempt in 1 2 3; do
+            if terraform init -backend=false; then break; fi
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            sleep $((attempt * 5))
+          done
+          terraform validate
+      - name: terraform init + validate (ecs)
+        working-directory: examples/ecs
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if terraform init -backend=false; then break; fi
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            sleep $((attempt * 5))
+          done
+          terraform validate

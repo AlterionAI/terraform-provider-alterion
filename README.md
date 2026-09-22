@@ -156,15 +156,71 @@ service:
 
 ## Local development
 
-Requires Go 1.27+ and Terraform.
+Requires Go 1.27+ and Terraform (or OpenTofu).
 
 ```bash
 go build -o terraform-provider-alterion .
 go vet ./...
 gofmt -l .          # must print nothing
-go test ./...       # unit tests (internal/client) — no network access
+go test ./...       # unit tests (internal/client + provider validators) — no network access
 TF_ACC=1 go test ./... -run TestAcc -v   # + acceptance-style tests (internal/provider), against an in-process fake Orion server, not a real deployment
 ```
+
+A `Makefile` wraps the common targets: `make build`, `make test`, `make testacc`, `make lint`, `make docs`, `make snapshot`.
+
+## Testing
+
+Four layers, from fastest/cheapest to slowest/most expensive:
+
+1. **Unit — `internal/client`.** Table-driven `httptest` coverage of every
+   route × status the API contract lists (`internal/client/client_test.go`),
+   plus golden short-id vectors and identity-key composition across all
+   three clouds (`internal/client/contract_test.go`). No network, no
+   `terraform` binary. `make test` or `go test ./internal/client/...`.
+2. **Unit — schema validators (`internal/provider/validators_test.go`).**
+   Drives each `validator.String` (cloud_account_id/cloud_region/
+   workload_name/environment/cloud_provider/workload_resource_id) directly
+   against a real two-attribute framework schema, table-driven across
+   aws/gcp/azure shapes — including GCP project-id min/max length and
+   trailing-hyphen, and Azure GUID uppercase. No `TF_ACC`/`terraform`
+   binary needed.
+3. **Acceptance — `internal/provider/{provider,acceptance_matrix}_test.go`.**
+   `terraform-plugin-testing` `resource.Test` against an in-process fake
+   Orion server (`httptest`), never a real deployment. Covers plan/apply
+   precedence (provider defaults vs. resource override), `RequiresReplace`
+   on every identity attribute, in-place updates, the lifecycle run once
+   per cloud (`TestAccAgentResource_LifecycleMatrix`), and every error path
+   (401/403/404/409/400-boundary, adopt, flag-off 404). Requires
+   `TF_ACC=1` and a `terraform` binary on `PATH` (or `TF_ACC_TERRAFORM_PATH`
+   pointed at an OpenTofu binary, with `TF_ACC_PROVIDER_NAMESPACE=hashicorp`
+   — verified locally against OpenTofu 1.12). `make testacc`.
+4. **Live (opt-in) — `internal/acceptance_live/live_test.go`.** Runs
+   create → read → update → destroy against a **real** Orion deployment.
+   Skipped unless `TF_ACC_LIVE=1` plus `ALTERION_ORION_URL`,
+   `ALTERION_API_TOKEN`, `ALTERION_TEST_ACCOUNT_ID`, `ALTERION_TEST_REGION`
+   are all set; uses a timestamp-suffixed `workload_name` per run and
+   always archives the agent on cleanup (via `terraform-plugin-testing`'s
+   own post-test destroy). `make testacc-live`. Runs nightly in CI
+   (`.github/workflows/nightly-live.yml`, `workflow_dispatch` too) against
+   the `ALTERION_ORION_URL`/`ALTERION_API_TOKEN`/`ALTERION_TEST_ACCOUNT_ID`/
+   `ALTERION_TEST_REGION` repo secrets; the job skips cleanly (a
+   `::warning::`, not a failure) when those secrets aren't configured.
+
+**Schema snapshot** (`internal/provider/schema_snapshot_test.go`) marshals
+the provider/resource/data-source schemas via `GetProviderSchema` and
+diffs them against `testdata/schema.json` — the customer-facing contract.
+Regenerate after an intentional schema change: `make snapshot` (or
+`UPDATE_SNAPSHOT=1 go test ./internal/provider/... -run TestSchemaSnapshot`).
+
+**CI** (`.github/workflows/ci.yml`): `gitleaks`, `lint` (gofmt + vet +
+golangci-lint), `unit` (layers 1-2 above, with an 85% coverage gate on
+`internal/client`), `acceptance` (layer 3, matrixed over Terraform 1.5.7,
+1.9.x, latest, and OpenTofu latest), `schema-snapshot`, `docs-drift`
+(`tfplugindocs validate` + `generate`, fails on any diff under `docs/`),
+and `examples` (builds the provider, writes a `dev_overrides` CLI config,
+then `terraform init`/`validate` against each example with real registry
+network access). `.github/workflows/nightly-live.yml` runs layer 4 nightly
+plus on-demand via `workflow_dispatch`.
 
 ### Using a local build with Terraform (dev overrides)
 
