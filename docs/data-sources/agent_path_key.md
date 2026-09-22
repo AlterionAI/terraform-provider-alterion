@@ -17,14 +17,14 @@ Resolves the deterministic gateway path key for an asserted Orion agent, ahead o
 
 ### Required
 
-- `cloud_account_id` (String) Cloud account/project/subscription id the workload is (or will be) deployed in: a 12-digit AWS account id, a GCP project id, or an Azure subscription GUID, matching cloud_provider.
-- `cloud_region` (String) Cloud region the workload is (or will be) deployed in, e.g. us-east-1.
 - `environment` (String) One of production, staging, development.
 - `workload_name` (String) Name of the workload (e.g. an AWS Bedrock AgentCore agent_runtime_name, a GCP Cloud Run service name, an ECS service name). Case-sensitive; must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$.
 
 ### Optional
 
+- `cloud_account_id` (String) Cloud account/project/subscription id the workload is (or will be) deployed in: a 12-digit AWS account id, a GCP project id, or an Azure subscription GUID, matching cloud_provider. Falls back to the provider's cloud_account_id when omitted; one of the two must be set.
 - `cloud_provider` (String) One of aws, gcp, azure. Defaults to aws.
+- `cloud_region` (String) Cloud region the workload is (or will be) deployed in, e.g. us-east-1. Falls back to the provider's cloud_region when omitted; one of the two must be set.
 
 ### Read-Only
 

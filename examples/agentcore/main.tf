@@ -15,9 +15,9 @@ variable "aws_region" {
   description = "AWS region the AgentCore runtime is deployed in."
 }
 
-variable "runtime_name" {
+variable "workload_name" {
   type        = string
-  description = "Name of the AgentCore runtime (agent_runtime_name). Case-sensitive; must match AWS Bedrock AgentCore's own naming rule: starts with a letter, then letters/digits/underscores, up to 48 characters."
+  description = "Name of the AgentCore runtime (agent_runtime_name). Case-sensitive; must match AWS Bedrock AgentCore's own naming rule: starts with a letter, then letters/digits/underscores, up to 48 characters. Used for both the data source and the resource, so they can't drift."
 }
 
 variable "environment" {
@@ -30,17 +30,19 @@ variable "environment" {
   }
 }
 
-variable "orion_boundary" {
-  type        = string
-  description = "Name of the Orion contextual boundary this agent is approved into on registration. Required here (no default): when omitted, the agent lands in Shadow and is only captured, not enforced, which is not the intended default for this example."
+variable "functional_boundaries" {
+  type        = list(string)
+  default     = []
+  description = "Functional Orion boundaries the agent also joins, beyond the environment boundary derived from var.environment."
 }
 
 provider "aws" {
   region = var.aws_region
 }
 
-# Used to fill cloud_account_id below without hardcoding it — this example
-# never asks the caller for their AWS account id directly.
+# This provider has no access to AWS credentials, so it can't discover the
+# account id itself — resolve it once here and feed it to the alterion
+# provider block below.
 data "aws_caller_identity" "current" {}
 
 provider "alterion" {
@@ -52,29 +54,29 @@ provider "alterion" {
   # Optional: lets the data source compute gateway_base_url locally if the
   # server ever returns a null one.
   gateway_url = "https://gw.example.com"
+
+  # Set once here so neither the data source nor the resource below repeats
+  # them; cloud_provider defaults to "aws" on the provider itself too.
+  cloud_account_id = data.aws_caller_identity.current.account_id
+  cloud_region     = var.aws_region
 }
 
 # STEP 1 — compute the agent's gateway path key BEFORE the runtime exists.
 # This is deterministic (a hash of environment + the workload's identity),
 # so it can be known ahead of time and baked into the runtime's own
 # environment variables at creation, instead of requiring a second deploy
-# once the agent is registered. Note this data source uses var.runtime_name
-# directly, not the resource's attribute below — it cannot depend on a
-# runtime that doesn't exist yet. cloud_provider defaults to "aws" and is
-# left unset here.
+# once the agent is registered. Uses var.workload_name directly, the same
+# variable the resource below uses — never the runtime resource's own name
+# attribute, so the two can't drift.
 data "alterion_agent_path_key" "this" {
-  environment      = var.environment
-  cloud_account_id = data.aws_caller_identity.current.account_id
-  cloud_region     = var.aws_region
-  workload_name    = var.runtime_name
+  environment   = var.environment
+  workload_name = var.workload_name
 }
 
 # STEP 2 — create the runtime, pointing its outbound LLM traffic at the
-# gateway path key computed above. Resource name per the AWS provider's
-# naming for Bedrock AgentCore; verify against the installed aws provider
-# version if this differs.
+# gateway path key computed above.
 resource "aws_bedrockagentcore_agent_runtime" "this" {
-  agent_runtime_name = var.runtime_name
+  agent_runtime_name = var.workload_name
 
   agent_runtime_artifact {
     container_configuration {
@@ -93,17 +95,16 @@ resource "aws_bedrockagentcore_agent_runtime" "this" {
 }
 
 # STEP 3 — register the agent with Orion now that the runtime exists and
-# has an ARN. workload_name and workload_resource_id both reference the
-# runtime resource directly, so Terraform infers the dependency; depends_on
-# is kept explicit anyway for clarity.
+# has an ARN. workload_name is var.workload_name again (not the runtime
+# resource's own name attribute); workload_resource_id references the
+# runtime so Terraform infers the dependency, and depends_on is kept
+# explicit anyway for clarity.
 resource "alterion_agent" "this" {
-  environment            = var.environment
-  cloud_account_id       = data.aws_caller_identity.current.account_id
-  cloud_region           = var.aws_region
-  workload_name          = aws_bedrockagentcore_agent_runtime.this.agent_runtime_name
-  workload_resource_id   = aws_bedrockagentcore_agent_runtime.this.agent_runtime_arn
-  workload_type          = "bedrock-agentcore-runtime"
-  auto_register_boundary = var.orion_boundary
+  environment           = var.environment
+  workload_name         = var.workload_name
+  workload_resource_id  = aws_bedrockagentcore_agent_runtime.this.agent_runtime_arn
+  workload_type         = "bedrock-agentcore-runtime"
+  functional_boundaries = var.functional_boundaries
 
   depends_on = [aws_bedrockagentcore_agent_runtime.this]
 }

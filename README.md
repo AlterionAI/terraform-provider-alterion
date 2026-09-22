@@ -34,19 +34,33 @@ provider "alterion" {
   # gateway_base_url locally (gateway_url + "/" + path_prefix + "/" + short_id)
   # if the server response's gatewayBaseUrl was null.
   gateway_url = "https://gw.example.com"
+
+  # Optional defaults for cloud_provider/cloud_account_id/cloud_region on
+  # every alterion_agent and alterion_agent_path_key below that omits them.
+  # This provider has no way to read your cloud credentials itself, so
+  # cloud_account_id/cloud_region still have to come from somewhere — set
+  # them here once (e.g. from data.aws_caller_identity.current.account_id)
+  # instead of repeating them on every resource/data source.
+  cloud_provider   = "aws"           # one of aws, gcp, azure; defaults to aws
+  cloud_account_id = "123456789012"
+  cloud_region     = "us-east-1"
 }
 ```
 
 ## The two building blocks
 
 Both resources use the same **cloud-agnostic identity**: `environment` +
-`cloud_provider` (one of `aws`, `gcp`, `azure`; defaults to `aws`) +
-`cloud_account_id` (an AWS account id, GCP project id, or Azure subscription
-id/GUID, matching `cloud_provider`) + `cloud_region` + `workload_name`. None
-of this is tied to any one cloud service — see
-[`examples/agentcore`](examples/agentcore) (AWS Bedrock AgentCore) and
-[`examples/ecs`](examples/ecs) (a plain AWS ECS service) for two different
-workload types registered through the identical resource shape.
+`cloud_provider` + `cloud_account_id` + `cloud_region` + `workload_name`.
+`cloud_provider`/`cloud_account_id`/`cloud_region` are optional on both and
+fall back to the provider block's defaults above; it's an error if neither
+level sets `cloud_account_id` or `cloud_region`. `workload_name` is
+**required on both** — the identity has to exist before the runtime does,
+so there's nothing to default it from. None of this is tied to any one
+cloud service — see [`examples/agentcore`](examples/agentcore) (AWS Bedrock
+AgentCore) and [`examples/ecs`](examples/ecs) (a plain AWS ECS service) for
+two different workload types registered through the identical resource
+shape, both feeding the same `workload_name` variable to the data source
+and the resource so the two can't drift apart.
 
 ### `data "alterion_agent_path_key"`
 
@@ -56,10 +70,8 @@ gateway URL *before* creating the runtime.
 
 ```hcl
 data "alterion_agent_path_key" "this" {
-  environment      = "production"
-  cloud_account_id = "123456789012"
-  cloud_region     = "us-east-1"
-  workload_name    = "support-bot"
+  environment   = "production"
+  workload_name = "support-bot"
 }
 
 output "gateway_base_url" {
@@ -77,12 +89,11 @@ attribute updates in place via a re-`POST` (the server upserts on
 
 ```hcl
 resource "alterion_agent" "this" {
-  environment          = "production"
-  cloud_account_id     = "123456789012"
-  cloud_region         = "us-east-1"
-  workload_name        = aws_bedrockagentcore_agent_runtime.this.agent_runtime_name
-  workload_resource_id = aws_bedrockagentcore_agent_runtime.this.agent_runtime_arn
-  workload_type        = "bedrock-agentcore-runtime"
+  environment           = "production"
+  workload_name         = aws_bedrockagentcore_agent_runtime.this.agent_runtime_name
+  workload_resource_id  = aws_bedrockagentcore_agent_runtime.this.agent_runtime_arn
+  workload_type         = "bedrock-agentcore-runtime"
+  functional_boundaries = ["production-support"]
 }
 ```
 
@@ -91,6 +102,12 @@ ARN, a GCP full resource name, or an Azure resource id) and `workload_type`
 are both optional; when `workload_type` is omitted the server infers it
 from `workload_resource_id`. `display_name` is optional and defaults to
 `workload_name` when omitted.
+
+Registration always joins the agent to the **environment boundary**
+(Production/Staging/Development), derived server-side from `environment` —
+no configuration needed for that. `functional_boundaries` is an optional
+list of additional functional Orion boundary names the agent also joins;
+it defaults to an empty list.
 
 `terraform import` is **not supported** — the Orion API has no GET-by-
 short-id route to reconstruct `environment`/`cloud_provider`/
@@ -132,7 +149,7 @@ example and the reasoning behind the ordering, and
 service:
 
 ```
-1. data.alterion_agent_path_key       →  gateway_base_url (deterministic, no agent needed yet)
+1. data.alterion_agent_path_key       →  gateway_base_url, resolved at plan time from environment + workload_name
 2. <cloud workload resource>          →  created with gateway_base_url baked into its env vars
 3. alterion_agent                     →  registered now that the workload's resource id exists, depends_on the workload
 ```
@@ -175,6 +192,15 @@ into [`docs/`](docs). Regenerate after schema changes:
 ```bash
 tfplugindocs generate --provider-name alterion
 ```
+
+## Changes in this version
+
+- Provider-level `cloud_provider` / `cloud_account_id` / `cloud_region`
+  defaults; the same three attributes are now optional (not required) on
+  both the resource and the data source.
+- `auto_register_boundary` removed; replaced by `functional_boundaries`
+  (a list) on `alterion_agent`. The environment boundary is always derived
+  from `environment` — no separate opt-in needed for that.
 
 ## License
 

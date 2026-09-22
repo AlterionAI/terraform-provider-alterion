@@ -16,9 +16,12 @@ Manages Alterion Orion asserted agent registrations and resolves their gateway p
 
 ### Required
 
-- `api_token` (String, Sensitive) Orion API token (looks like orion_at_<hex>). May also be set via the ALTERION_API_TOKEN environment variable. Ownership of anything this token registers is tied to the Orion user who minted it, not to the token itself, so rotating the token does not change ownership and a re-apply keeps working after rotation. Tokens expire (90 days by default) and stop working if the minting user loses the approver role; a 401 from the API surfaces as "token rejected; mint a new one".
+- `api_token` (String, Sensitive) Orion API token (looks like orion_at_<hex>). May also be set via the ALTERION_API_TOKEN environment variable. Ownership is tied to the Orion user who minted the token, not the token itself, so rotating it keeps ownership intact. Tokens expire (90 days by default); a rejected token surfaces as a 401.
 - `orion_url` (String) Base URL of the Orion web app (e.g. https://orion.example.com). May also be set via the ALTERION_ORION_URL environment variable.
 
 ### Optional
 
+- `cloud_account_id` (String) Default cloud_account_id for the resource and data source when they omit it.
+- `cloud_provider` (String) Default cloud_provider for the alterion_agent resource and alterion_agent_path_key data source when they omit it. One of aws, gcp, azure. Defaults to aws.
+- `cloud_region` (String) Default cloud_region for the resource and data source when they omit it.
 - `gateway_url` (String) Optional base URL for the Alterion gateway. When set, the alterion_agent_path_key data source computes gateway_base_url as "<gateway_url>/<path_prefix>/<short_id>" if the server did not return one.

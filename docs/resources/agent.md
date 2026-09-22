@@ -17,17 +17,17 @@ Registers an asserted Orion agent. This is the register-late half of the compute
 
 ### Required
 
-- `cloud_account_id` (String) Cloud account/project/subscription id the workload is deployed in: a 12-digit AWS account id, a GCP project id, or an Azure subscription GUID, matching cloud_provider. Changing this forces a new resource.
-- `cloud_region` (String) Cloud region the workload is deployed in, e.g. us-east-1. Changing this forces a new resource.
 - `environment` (String) One of production, staging, development. Changing this forces a new resource.
-- `workload_name` (String) Name of the workload (e.g. an AWS Bedrock AgentCore agent_runtime_name, a GCP Cloud Run service name, an ECS service name). Case-sensitive; must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$. Changing this forces a new resource.
+- `workload_name` (String) Name of the workload (e.g. an AWS Bedrock AgentCore agent_runtime_name, a GCP Cloud Run service name, an ECS service name). Case-sensitive; must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$. Required: the identity must exist before the runtime does. Changing this forces a new resource.
 
 ### Optional
 
 - `adopt` (Boolean) When true, allows this resource to take over an agent row already owned by a different principal (including an organically header-asserted agent with no owner, which otherwise 409s on registration), and to delete it even if owned elsewhere. Defaults to false. Requires the provider's api_token to have been minted with adopt permission (allowAdopt: true, scope agents:automation:adopt); otherwise the API returns 403, which this provider surfaces as an error.
-- `auto_register_boundary` (String) Name of the Orion contextual boundary this agent is approved into on registration. When omitted, the agent lands in Shadow and is only captured, not enforced.
-- `cloud_provider` (String) One of aws, gcp, azure. Defaults to aws. Changing this forces a new resource.
+- `cloud_account_id` (String) Cloud account/project/subscription id the workload is deployed in: a 12-digit AWS account id, a GCP project id, or an Azure subscription GUID, matching cloud_provider. Falls back to the provider's cloud_account_id when omitted; one of the two must be set. Changing this forces a new resource.
+- `cloud_provider` (String) One of aws, gcp, azure. Falls back to the provider's cloud_provider, which defaults to aws. Changing this forces a new resource.
+- `cloud_region` (String) Cloud region the workload is deployed in, e.g. us-east-1. Falls back to the provider's cloud_region when omitted; one of the two must be set. Changing this forces a new resource.
 - `display_name` (String) Human-readable display name for the agent. Defaults to workload_name when omitted.
+- `functional_boundaries` (List of String) Functional Orion boundaries the agent also joins. The environment boundary is derived from environment and never listed here.
 - `workload_resource_id` (String) The workload's own post-create unique id once it exists: an AWS ARN, a GCP full resource name, or an Azure resource id.
 - `workload_type` (String) Override for the workload's type, e.g. bedrock-agentcore-runtime, ecs-service, cloud-run-service. When omitted, the server infers it from workload_resource_id.
 

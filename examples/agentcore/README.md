@@ -1,72 +1,69 @@
 # AgentCore example: compute-early, register-late
 
-This example wires an AWS Bedrock AgentCore runtime up to Alterion Orion's
-gateway, in the order that avoids a chicken-and-egg deploy problem. See
+Wires an AWS Bedrock AgentCore runtime up to Alterion Orion's gateway, in the
+order that avoids a chicken-and-egg deploy problem. See
 [`examples/ecs`](../ecs) for the same pattern applied to a plain AWS ECS
-service — the `alterion_agent` / `alterion_agent_path_key` surface itself
-has nothing AgentCore-specific about it.
+service — `alterion_agent` / `alterion_agent_path_key` have nothing
+AgentCore-specific about them.
 
 ## Why this ordering
 
-An agent runtime needs to know its own gateway URL (to send LLM traffic
-through `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`) **at creation time** — it's
-baked into the container's environment variables. But the natural instinct
-is to register the agent with Orion *after* the runtime exists, once you
-have a real ARN to hand it. Do it in that order and you hit a catch-22: the
-runtime needs the gateway URL before it exists, but you don't want to
-register the agent (and mint a real, permanent identity for it) before the
-runtime exists either.
-
-Orion's asserted-agent path key resolves this because it's **deterministic**:
-the short id embedded in the gateway URL is just a hash of the environment
-plus the workload's identity — cloud provider, cloud account id, cloud
-region, and workload name. It depends only on those values, never on
-whether the agent has actually been registered yet. So the gateway URL can
-be computed before the runtime exists, with no risk of it changing out from
-under you once registration happens for real.
-
-That gives two steps that can run in the right order:
+The runtime needs its own gateway URL (`OPENAI_BASE_URL` /
+`ANTHROPIC_BASE_URL`) baked into its environment variables **at creation
+time**, but you don't want to register the agent with Orion before the
+runtime exists either. Orion's asserted-agent path key resolves this
+because it's **deterministic** — a hash of `environment` + the workload's
+identity — so it can be computed before the runtime, or the agent
+registration, exist:
 
 1. **Compute early** — `data "alterion_agent_path_key"` resolves the gateway
-   URL from `environment` + `cloud_account_id` + `cloud_region` +
-   `workload_name` alone (`cloud_provider` defaults to `aws`). No agent has
-   to exist yet.
+   URL from `environment` + `workload_name` alone (cloud identity comes from
+   the provider block).
 2. **Create the runtime** — pass that URL into the runtime's environment
    variables at creation time.
 3. **Register late** — `resource "alterion_agent"` registers the real agent
    row, now that the runtime exists and has an ARN to attach as
-   `workload_resource_id`.
+   `workload_resource_id`. `depends_on` keeps this explicit even though the
+   ARN reference already implies it.
 
 If step 3 fails or is deferred, the runtime still works — the gateway
-resolves traffic by short id regardless of whether the asserted-agent row is
-fully registered. Registration is what makes the agent visible and governed
-in Orion, but it doesn't gate the runtime's ability to talk to the gateway.
+resolves traffic by short id regardless of whether the agent row is fully
+registered.
 
-This example sets `auto_register_boundary` from the required `orion_boundary`
-variable so the agent is approved into a real boundary the moment it
-registers; if you omit `auto_register_boundary` in your own configuration,
-the agent instead lands in Shadow, where it's only captured, not enforced.
+## Identity: provider-level cloud defaults, workload_name required
 
-## Identity: cloud, account, region, and workload name
+The agent's identity is `cloud_provider` + `cloud_account_id` +
+`cloud_region` + `workload_name`. This example sets `cloud_account_id` and
+`cloud_region` **once**, on the `provider "alterion"` block, from
+`data.aws_caller_identity.current.account_id` and `var.aws_region` — the
+provider has no way to read AWS credentials itself, so this account id has
+to come from the `aws` provider. Both the data source and the resource then
+omit them and inherit the provider's values; `cloud_provider` defaults to
+`aws` on the provider too.
 
-The agent's identity within an environment is the tuple `cloud_provider` +
-`cloud_account_id` + `cloud_region` + `workload_name`. This keeps identities
-unique across clouds/accounts/regions without a central registry, and
-`workload_name` is used **exactly as given** — case-sensitive, no
-lowercasing or hyphen-folding — so that two workloads whose names differ
-only by case (e.g. `SupportBot` vs. `supportbot`) stay distinct Orion agents
-too. `workload_resource_id` (this example: the AgentCore runtime's ARN) and
-`workload_type` are optional metadata attached once the underlying resource
-exists; they play no part in the identity itself.
+`workload_name` stays **required** on both the data source and the
+resource — the identity has to exist before the runtime does, so there's
+nothing to default it from. This example uses the single `var.workload_name`
+for both, never the AgentCore runtime resource's own `agent_runtime_name`
+attribute, so the two can't drift apart.
 
-If the resulting identity happens to already exist as an organically
-header-asserted agent (one Orion picked up on its own, with no owner yet),
-registration `409`s unless you set `adopt = true` on `alterion_agent.this`
-— and that only works if `ALTERION_API_TOKEN` was minted with adopt
-permission. See the root [README](../../README.md#ownership-and-adopt) for
-the full ownership/adopt contract, including why rotating the token doesn't
-require re-adopting anything and why `terraform destroy` + re-`apply`
-reactivates the same agent instead of creating a new one.
+## Boundaries
+
+Registering an agent always joins it to the environment boundary
+(Production/Staging/Development) derived from `var.environment` — no
+configuration needed for that. `functional_boundaries` is the optional,
+additional list of functional Orion boundaries this agent should also join;
+it defaults to `[]`. There's no longer an `auto_register_boundary`
+attribute — an agent that registers with no `functional_boundaries` still
+lands in its environment boundary, not in Shadow.
+
+## Ownership and `adopt`
+
+If the resulting identity already exists as an organically header-asserted
+agent (one Orion picked up on its own, with no owner yet), registration
+`409`s unless you set `adopt = true` on `alterion_agent.this` — and that
+only works if `ALTERION_API_TOKEN` was minted with adopt permission. See the
+root [README](../../README.md#ownership-and-adopt) for the full contract.
 
 ## Running this example
 
@@ -75,13 +72,10 @@ export ALTERION_API_TOKEN=orion_at_...
 terraform init
 terraform plan \
   -var="aws_region=us-east-1" \
-  -var="runtime_name=support-bot" \
+  -var="workload_name=support-bot" \
   -var="environment=production" \
-  -var="orion_boundary=production-support"
+  -var='functional_boundaries=["production-support"]'
 ```
-
-`cloud_account_id` is filled in automatically from `data.aws_caller_identity`
-— you don't pass your AWS account id as a variable.
 
 This example is for illustration — it references `aws_bedrockagentcore_agent_runtime`
 as documented by the AWS provider at the time of writing; check the AWS
