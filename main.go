@@ -11,9 +11,8 @@ import (
 	"github.com/AlterionAI/terraform-provider-alterion/internal/provider"
 )
 
-// version is set via -ldflags "-X main.version=..." at release build time
-// (see .github/workflows for the release pipeline once one exists). It
-// defaults to "dev" for local builds.
+// version is set via -ldflags "-X main.version=..." at release build time;
+// "dev" for local builds.
 var version = "dev"
 
 func main() {
