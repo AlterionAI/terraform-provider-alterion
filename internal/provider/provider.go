@@ -64,11 +64,11 @@ func (p *AlterionProvider) Schema(_ context.Context, _ provider.SchemaRequest, r
 		Description: "Manages Alterion Orion asserted agent registrations and resolves their gateway path keys ahead of runtime deployment.",
 		Attributes: map[string]schema.Attribute{
 			"orion_url": schema.StringAttribute{
-				Required:    true,
+				Optional:    true,
 				Description: "Base URL of the Orion web app (e.g. https://orion.example.com). May also be set via the ALTERION_ORION_URL environment variable.",
 			},
 			"api_token": schema.StringAttribute{
-				Required:    true,
+				Optional:    true,
 				Sensitive:   true,
 				Description: "Orion API token (looks like orion_at_<hex>). May also be set via the ALTERION_API_TOKEN environment variable. Ownership is tied to the Orion user who minted the token, not the token itself, so rotating it keeps ownership intact. Tokens expire (90 days by default); a rejected token surfaces as a 401.",
 			},

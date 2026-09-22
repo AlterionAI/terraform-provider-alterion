@@ -61,9 +61,12 @@ jobs:
       - name: go vet
         run: go vet ./...
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        # goinstall builds the linter with the runner's Go (1.27); prebuilt
+        # "latest" binaries lag the toolchain and refuse newer go.mod targets.
+        uses: golangci/golangci-lint-action@v8
         with:
-          version: latest
+          version: v2.13.2
+          install-mode: goinstall
 
   unit:
     name: Unit tests + coverage gate
